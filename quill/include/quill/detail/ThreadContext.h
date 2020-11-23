@@ -30,7 +30,7 @@ class ThreadContext
 {
 public:
 #if defined(QUILL_USE_BOUNDED_QUEUE)
-  using SPSCQueueT = BoundedSPSCQueue<RecordBase, QUILL_QUEUE_CAPACITY>;
+  using SPSCQueueT = BoundedSPSCQueue<BaseEvent, QUILL_QUEUE_CAPACITY>;
 #else
   using SPSCQueueT = UnboundedSPSCQueue<BaseEvent>;
 #endif
@@ -63,16 +63,37 @@ public:
   void operator delete(void* p) { aligned_free(p); }
 
   /**
-   * @return A reference to the single-producer-single-consumer queue
+   * @return A reference to the generic single-producer-single-consumer queue
    */
-  QUILL_NODISCARD_ALWAYS_INLINE_HOT SPSCQueueT& spsc_queue() noexcept { return _spsc_queue; }
+  QUILL_NODISCARD_ALWAYS_INLINE_HOT SPSCQueueT& spsc_queue() noexcept
+  {
+    return _generic_spsc_queue;
+  }
 
   /**
-   * @return A reference to the single-producer-single-consumer queue const overload
+   * @return A reference to the generic single-producer-single-consumer queue const overload
    */
   QUILL_NODISCARD_ALWAYS_INLINE_HOT SPSCQueueT const& spsc_queue() const noexcept
   {
-    return _spsc_queue;
+    return _generic_spsc_queue;
+  }
+
+  /**
+   * In this queue we store only log statements that contain 100% of built-in types
+   * @return A reference to the fast single-producer-single-consumer queue
+   */
+  QUILL_NODISCARD_ALWAYS_INLINE_HOT SPSCQueueT& fast_spsc_queue() noexcept
+  {
+    return _fast_spsc_queue;
+  }
+
+  /**
+   * In this queue we store only log statements that contain 100% of built-in types
+   * @return A reference to the fast single-producer-single-consumer queue const overload
+   */
+  QUILL_NODISCARD_ALWAYS_INLINE_HOT SPSCQueueT const& fast_spsc_queue() const noexcept
+  {
+    return _fast_spsc_queue;
   }
 
   /**
@@ -116,7 +137,8 @@ public:
 #endif
 
 private:
-  SPSCQueueT _spsc_queue;                                         /** queue for this thread */
+  SPSCQueueT _generic_spsc_queue; /** queue for this thread, accepts any argument type */
+  SPSCQueueT _fast_spsc_queue; /** queue for this thread, only log statements with POD types are here */
   std::string _thread_id{fmt::format_int(get_thread_id()).str()}; /**< cache this thread pid */
   std::atomic<bool> _valid{true}; /**< is this context valid, set by the caller, read by the backend worker thread */
 

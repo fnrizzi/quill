@@ -12,30 +12,31 @@
 #include "quill/detail/BoundedSPSCQueue.h"          // for BoundedSPSCQueue<>...
 #include "quill/detail/Config.h"                    // for Config
 #include "quill/detail/HandlerCollection.h"         // for HandlerCollection
-#include "quill/detail/ThreadContext.h"             // for ThreadContext, Thr...
-#include "quill/detail/ThreadContextCollection.h"   // for ThreadContextColle...
-#include "quill/detail/events/BaseEvent.h"          // for RecordBase
-#include "quill/detail/misc/Attributes.h"           // for QUILL_ATTRIBUTE_HOT
-#include "quill/detail/misc/Common.h"               // for QUILL_RDTSC_RESYNC...
-#include "quill/detail/misc/FreeListAllocator.h"    // for FreeListAllocator..
-#include "quill/detail/misc/Macros.h"               // for QUILL_LIKELY
-#include "quill/detail/misc/Os.h"                   // for set_cpu_affinity, get_thread_id
-#include "quill/detail/misc/RdtscClock.h"           // for RdtscClock
-#include "quill/handlers/Handler.h"                 // for Handler
-#include <atomic>                                   // for atomic, memory_ord...
-#include <cassert>                                  // for assert
-#include <chrono>                                   // for nanoseconds, milli...
-#include <cstdint>                                  // for uint16_t
-#include <exception>                                // for exception
-#include <functional>                               // for greater, function
-#include <limits>                                   // for numeric_limits
-#include <memory>                                   // for unique_ptr, make_u...
-#include <mutex>                                    // for call_once, once_flag
-#include <queue>                                    // for priority_queue
-#include <string>                                   // for allocator, string
-#include <thread>                                   // for sleep_for, thread
-#include <utility>                                  // for move
-#include <vector>                                   // for vector
+#include "quill/detail/LogDataNode.h"
+#include "quill/detail/ThreadContext.h"           // for ThreadContext, Thr...
+#include "quill/detail/ThreadContextCollection.h" // for ThreadContextColle...
+#include "quill/detail/events/BaseEvent.h"        // for RecordBase
+#include "quill/detail/misc/Attributes.h"         // for QUILL_ATTRIBUTE_HOT
+#include "quill/detail/misc/Common.h"             // for QUILL_RDTSC_RESYNC...
+#include "quill/detail/misc/FreeListAllocator.h"  // for FreeListAllocator..
+#include "quill/detail/misc/Macros.h"             // for QUILL_LIKELY
+#include "quill/detail/misc/Os.h"                 // for set_cpu_affinity, get_thread_id
+#include "quill/detail/misc/RdtscClock.h"         // for RdtscClock
+#include "quill/handlers/Handler.h"               // for Handler
+#include <atomic>                                 // for atomic, memory_ord...
+#include <cassert>                                // for assert
+#include <chrono>                                 // for nanoseconds, milli...
+#include <cstdint>                                // for uint16_t
+#include <exception>                              // for exception
+#include <functional>                             // for greater, function
+#include <limits>                                 // for numeric_limits
+#include <memory>                                 // for unique_ptr, make_u...
+#include <mutex>                                  // for call_once, once_flag
+#include <queue>                                  // for priority_queue
+#include <string>                                 // for allocator, string
+#include <thread>                                 // for sleep_for, thread
+#include <utility>                                // for move
+#include <vector>                                 // for vector
 
 namespace quill
 {
@@ -144,19 +145,54 @@ private:
 private:
   struct TransitEvent
   {
+    /**
+     * Constructor used when we are pulling event from the generic_queue
+     * @param in_thread_context
+     * @param base_event
+     */
     TransitEvent(ThreadContext* in_thread_context,
-                 std::unique_ptr<BaseEvent, FreeListAllocatorDeleter<BaseEvent>> base_event)
-      : thread_context(in_thread_context), base_event(std::move(base_event))
+                 std::unique_ptr<BaseEvent, FreeListAllocatorDeleter<BaseEvent>> in_base_event)
+      : thread_context(in_thread_context),
+        base_event(std::move(in_base_event)),
+        timestamp(base_event->timestamp())
+    {
+    }
+
+    /**
+     * Constructor used for any events coming from the fast_queue
+     * @param in_thread_context
+     * @param in_timestamp
+     * @param in_log_data_node
+     * @param in_fmt_store
+     */
+    TransitEvent(ThreadContext* in_thread_context, uint64_t in_timestamp,
+                 detail::LogDataNode const* in_log_data_node, detail::LoggerDetails const* in_logger_details,
+                 fmt::dynamic_format_arg_store<fmt::format_context> in_fmt_store)
+      : thread_context(in_thread_context),
+        timestamp(in_timestamp),
+        log_data_node(in_log_data_node),
+        logger_details(in_logger_details),
+        fmt_store(std::move(in_fmt_store))
     {
     }
 
     friend bool operator>(TransitEvent const& lhs, TransitEvent const& rhs)
     {
-      return lhs.base_event->timestamp() > rhs.base_event->timestamp();
+      return lhs.timestamp > rhs.timestamp;
     }
 
     ThreadContext* thread_context; /** We clean any invalidated thread_context after the priority queue is empty, so this can not be invalid */
-    std::unique_ptr<BaseEvent, FreeListAllocatorDeleter<BaseEvent>> base_event;
+
+    /**
+     * TransitEvent is like a variant, it will contain a base_event is the event was pulled from the generic_queue
+     * or it will contain metadata* and fmt dynamic store if the event was pulled from the fast_queue
+     */
+    std::unique_ptr<BaseEvent, FreeListAllocatorDeleter<BaseEvent>> base_event{nullptr};
+
+    uint64_t timestamp;                                /** timestamp is populated for both events */
+    detail::LogDataNode const* log_data_node{nullptr}; /** log_data_node in case of fast_queue **/
+    detail::LoggerDetails const* logger_details{nullptr};         /** The logger details **/
+    fmt::dynamic_format_arg_store<fmt::format_context> fmt_store; /** fmt_store in case of fast_queue **/
   };
 
 private:
@@ -279,17 +315,176 @@ void BackendWorker::_populate_priority_queue(ThreadContextCollection::backend_th
   // copy everything to a priority queue
   for (ThreadContext* thread_context : cached_thread_contexts)
   {
-    ThreadContext::SPSCQueueT& spsc_queue = thread_context->spsc_queue();
+    // Read the generic queue
+    ThreadContext::SPSCQueueT& generic_spsc_queue = thread_context->spsc_queue();
 
     while (true)
     {
-      auto handle = spsc_queue.try_pop();
+      auto handle = generic_spsc_queue.try_pop();
 
       if (!handle.is_valid())
       {
         break;
       }
       _transit_events.emplace(thread_context, handle.data()->clone(_free_list_allocator));
+    }
+
+    // Read the fast queue
+    ThreadContext::SPSCQueueT& fast_spsc_queue = thread_context->fast_spsc_queue();
+
+    while (true)
+    {
+      // Note: The producer will commit a write to this queue when one complete message is written.
+      // This means that if we can read something from the queue it will be a full message
+      // The producer will add items to the buffer :
+      // |timestamp|log_data_node*|logger_details*|args...|
+
+      // We want to read a minimum size of uint64_t (the size of the timestamp)
+      auto const* read_buffer = fast_spsc_queue.prepare_read(sizeof(uint64_t));
+
+      if (!read_buffer)
+      {
+        // nothing to read
+        break;
+      }
+
+      // read the next full message
+      auto const timestamp = *(reinterpret_cast<uint64_t const*>(read_buffer));
+      read_buffer += sizeof(uint64_t);
+
+      auto const data_node_ptr = *(reinterpret_cast<uintptr_t const*>(read_buffer));
+      auto const data_node = reinterpret_cast<detail::LogDataNode const*>(data_node_ptr);
+      read_buffer += sizeof(uintptr_t);
+
+      auto const logger_details_ptr = *(reinterpret_cast<uintptr_t const*>(read_buffer));
+      auto const logger_details = reinterpret_cast<detail::LoggerDetails const*>(logger_details_ptr);
+      read_buffer += sizeof(uintptr_t);
+
+      // Use our type_info string to read the remaining message until the end
+      std::vector<std::string> tokens;
+      std::string ext_token;
+      std::istringstream token_stream(data_node->type_info_data);
+      while (std::getline(token_stream, ext_token, '%'))
+      {
+        tokens.push_back(ext_token);
+      }
+
+      // Store all arguments
+      fmt::dynamic_format_arg_store<fmt::format_context> fmt_store;
+      size_t read_size = 0;
+      for (auto const& token : tokens)
+      {
+        if (token == "I8")
+        {
+          using type_t = int8_t;
+          fmt_store.push_back(*(reinterpret_cast<type_t const*>(read_buffer)));
+
+          read_buffer += sizeof(type_t);
+          read_size += sizeof(type_t);
+        }
+        else if (token == "I16")
+        {
+          using type_t = int16_t;
+          fmt_store.push_back(*(reinterpret_cast<type_t const*>(read_buffer)));
+
+          read_buffer += sizeof(type_t);
+          read_size += sizeof(type_t);
+        }
+        else if (token == "I32")
+        {
+          using type_t = int32_t;
+          fmt_store.push_back(*(reinterpret_cast<type_t const*>(read_buffer)));
+
+          read_buffer += sizeof(type_t);
+          read_size += sizeof(type_t);
+        }
+        else if (token == "I64")
+        {
+          using type_t = int64_t;
+          fmt_store.push_back(*(reinterpret_cast<type_t const*>(read_buffer)));
+
+          read_buffer += sizeof(type_t);
+          read_size += sizeof(type_t);
+        }
+        else if (token == "U8")
+        {
+          using type_t = uint8_t;
+          fmt_store.push_back(*(reinterpret_cast<type_t const*>(read_buffer)));
+
+          read_buffer += sizeof(type_t);
+          read_size += sizeof(type_t);
+        }
+        else if (token == "U16")
+        {
+          using type_t = uint16_t;
+          fmt_store.push_back(*(reinterpret_cast<type_t const*>(read_buffer)));
+
+          read_buffer += sizeof(type_t);
+          read_size += sizeof(type_t);
+        }
+        else if (token == "U32")
+        {
+          using type_t = uint32_t;
+          fmt_store.push_back(*(reinterpret_cast<type_t const*>(read_buffer)));
+
+          read_buffer += sizeof(type_t);
+          read_size += sizeof(type_t);
+        }
+        else if (token == "U64")
+        {
+          using type_t = uint64_t;
+          fmt_store.push_back(*(reinterpret_cast<type_t const*>(read_buffer)));
+
+          read_buffer += sizeof(type_t);
+          read_size += sizeof(type_t);
+        }
+        else if (token == "D")
+        {
+          using type_t = double;
+          fmt_store.push_back(*(reinterpret_cast<type_t const*>(read_buffer)));
+
+          read_buffer += sizeof(type_t);
+          read_size += sizeof(type_t);
+        }
+        else if (token == "LD")
+        {
+          using type_t = long double;
+          fmt_store.push_back(*(reinterpret_cast<type_t const*>(read_buffer)));
+
+          read_buffer += sizeof(type_t);
+          read_size += sizeof(type_t);
+        }
+        else if (token == "F")
+        {
+          using type_t = float;
+          fmt_store.push_back(*(reinterpret_cast<type_t const*>(read_buffer)));
+
+          read_buffer += sizeof(type_t);
+          read_size += sizeof(type_t);
+        }
+        else if (token == "C")
+        {
+          using type_t = char;
+          fmt_store.push_back(*(reinterpret_cast<type_t const*>(read_buffer)));
+
+          read_buffer += sizeof(type_t);
+          read_size += sizeof(type_t);
+        }
+        else if (token == "S")
+        {
+          fmt_store.push_back((reinterpret_cast<char const*>(read_buffer)));
+
+          size_t const len = strlen(reinterpret_cast<char const*>(read_buffer));
+          read_buffer += len + 1;
+          read_size += len + 1;
+        }
+      }
+
+      // Finish reading
+      fast_spsc_queue.finish_read(sizeof(uint64_t) + sizeof(uintptr_t) + sizeof(uintptr_t) + read_size);
+
+      // We have the timestamp and the data node ptr, we can construct a transit event out of them
+      _transit_events.emplace(thread_context, timestamp, data_node, logger_details, std::move(fmt_store));
     }
   }
 }
@@ -310,9 +505,46 @@ void BackendWorker::_process_event()
   // error here instead of catching it in the parent try/catch block of main_loop
   QUILL_TRY
   {
-    transit_event.base_event->backend_process(_backtrace_log_record_storage,
-                                              transit_event.thread_context->thread_id(),
-                                              obtain_active_handlers, get_real_ts);
+    if (transit_event.base_event)
+    {
+      // This is a transit event coming from the generic_spsc_event_queue
+      transit_event.base_event->backend_process(_backtrace_log_record_storage,
+                                                transit_event.thread_context->thread_id(),
+                                                obtain_active_handlers, get_real_ts);
+    }
+    else
+    {
+      // We are processing a transit event coming from the fast_spsc_event_queue
+      // Forward the record to all of the logger handlers
+      for (auto& handler : transit_event.logger_details->handlers())
+      {
+
+#if !defined(QUILL_CHRONO_CLOCK)
+        std::chrono::nanoseconds const timestamp = _rdtsc_clock->time_since_epoch(transit_event.timestamp);
+#else
+        // Then the timestamp() will be already in epoch no need to convert it like above
+        // The precision of system_clock::time-point is not portable across platforms.
+        std::chrono::system_clock::duration const timestamp_duration{transit_event.timestamp};
+        std::chrono::nanoseconds const timestamp = std::chrono::nanoseconds{timestamp_duration};
+#endif
+        handler->formatter().format(timestamp, transit_event.thread_context->thread_id(),
+                                    transit_event.logger_details->name(),
+                                    transit_event.log_data_node->metadata, transit_event.fmt_store);
+
+        // After calling format on the formatter we have to request the formatter record
+        auto const& formatted_log_record_buffer = handler->formatter().formatted_log_record();
+
+        // If all filters are okay we write this log record to the file
+        if (handler->apply_filters(transit_event.thread_context->thread_id(), timestamp,
+                                   transit_event.log_data_node->metadata, formatted_log_record_buffer))
+        {
+          // log to the handler, also pass the log_record_timestamp this is only needed in some
+          // cases like daily file rotation
+          handler->write(formatted_log_record_buffer, timestamp,
+                         transit_event.log_data_node->metadata.level());
+        }
+      }
+    }
 
     // Remove this event and move to the next
     _transit_events.pop();
@@ -391,13 +623,15 @@ void BackendWorker::_main_loop()
 std::chrono::nanoseconds BackendWorker::_get_real_timestamp(BaseEvent const* base_event) const noexcept
 {
 #if !defined(QUILL_CHRONO_CLOCK)
-  static_assert(std::is_same<BaseEvent::using_rdtsc, std::true_type>::value,
-                "BaseEvent has a std::chrono timestamp, but the backend thread is using rdtsc timestamp");
+  static_assert(
+    std::is_same<BaseEvent::using_rdtsc, std::true_type>::value,
+    "BaseEvent has a std::chrono timestamp, but the backend thread is using rdtsc timestamp");
   // pass to our clock the stored rdtsc from the caller thread
   return _rdtsc_clock->time_since_epoch(base_event->timestamp());
 #else
-  static_assert(std::is_same<BaseEvent::using_rdtsc, std::false_type>::value,
-                "BaseEvent has an rdtsc timestamp, but the backend thread is using std::chrono timestamp");
+  static_assert(
+    std::is_same<BaseEvent::using_rdtsc, std::false_type>::value,
+    "BaseEvent has an rdtsc timestamp, but the backend thread is using std::chrono timestamp");
 
   // Then the timestamp() will be already in epoch no need to convert it like above
   // The precision of system_clock::time-point is not portable across platforms.

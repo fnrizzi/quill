@@ -8,12 +8,14 @@
 #include "quill/Fmt.h"
 #include "quill/LogLevel.h"
 #include "quill/QuillError.h"
+#include "quill/detail/LogDataNode.h"
 #include "quill/detail/LoggerDetails.h"
 #include "quill/detail/ThreadContext.h"
 #include "quill/detail/ThreadContextCollection.h"
 #include "quill/detail/events//BacktraceEvent.h"
 #include "quill/detail/events/LogRecordEvent.h"
 #include "quill/detail/misc/Macros.h"
+#include "quill/detail/misc/Rdtsc.h"
 #include "quill/detail/misc/TypeTraits.h"
 #include "quill/detail/misc/TypeTraitsCopyable.h"
 #include "quill/detail/misc/Utilities.h"
@@ -26,7 +28,7 @@ namespace quill
 
 namespace detail
 {
-  class LoggerCollection;
+class LoggerCollection;
 }
 
 /**
@@ -111,6 +113,42 @@ public:
    * @note This function is thread-safe.
    * @param fmt_args format arguments
    */
+  //  template <bool IsBackTraceLogRecord, typename TLogRecordMetadata, typename TFormatString, typename... FmtArgs>
+  //  QUILL_ALWAYS_INLINE_HOT void log(TFormatString format_string, FmtArgs&&... fmt_args)
+  //  {
+  //    check_format(format_string, std::forward<FmtArgs>(fmt_args)...);
+  //
+  //    size_t total_size = sizeof(uint64_t) + sizeof(uintptr_t) + sizeof(uintptr_t);
+  //    detail::get_size_of(total_size, fmt_args...);
+  //
+  //    unsigned char* write_buffer =
+  //      _thread_context_collection.local_thread_context()->fast_spsc_queue().prepare_write(total_size);
+  //
+  //    // write the timestamp first
+  //#if !defined(QUILL_CHRONO_CLOCK)
+  //    uint64_t timestamp{detail::rdtsc()};
+  //#else
+  //    uint64_t timestamp{static_cast<uint64_t>(std::chrono::system_clock::now().time_since_epoch().count())};
+  //#endif
+  //    memcpy(write_buffer, &timestamp, sizeof(timestamp));
+  //    write_buffer += sizeof(timestamp);
+  //
+  //    // Then write the pointer to the LogDataNode
+  //    detail::LogDataNode const* data_node = detail::log_data_node_wrapper<TLogRecordMetadata, FmtArgs...>.log_data_node;
+  //    memcpy(write_buffer, &data_node, sizeof(uintptr_t));
+  //    write_buffer += sizeof(uintptr_t);
+  //
+  //    // Then write the logger details of this logger
+  //    detail::LoggerDetails const* logger_details = std::addressof(_logger_details);
+  //    memcpy(write_buffer, &logger_details, sizeof(uintptr_t));
+  //    write_buffer += sizeof(uintptr_t);
+  //
+  //    // Write all arguments
+  //    detail::store_arguments(write_buffer, fmt_args...);
+  //
+  //    _thread_context_collection.local_thread_context()->fast_spsc_queue().commit_write(total_size);
+  //  }
+
   template <bool IsBackTraceLogRecord, typename TLogRecordMetadata, typename TFormatString, typename... FmtArgs>
   QUILL_ALWAYS_INLINE_HOT void log(TFormatString format_string, FmtArgs&&... fmt_args)
   {

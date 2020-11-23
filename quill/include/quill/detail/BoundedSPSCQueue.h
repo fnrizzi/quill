@@ -195,6 +195,37 @@ public:
   QUILL_NODISCARD_ALWAYS_INLINE_HOT Handle try_pop() noexcept;
 
   /**
+   * Used if instead of pushing an object we want to get the raw memory inside the buffer to
+   * write the object ourselves.
+   * This is used for POD only types to directly memcpy them inside the buffer
+   * @note: has to be used along with commit_write
+   * @param requested_size the size we want to copy
+   * @return Buffer begin to write the object or nullptr otherwise
+   */
+  QUILL_NODISCARD_ALWAYS_INLINE_HOT unsigned char* prepare_write(size_t requested_size) noexcept;
+
+  /**
+   * Must be called after prepare_write to commit the write to the buffer and make the consumer
+   * thread aware of the write
+   * @note: must be used after prepare_write
+   * @param requested_size size of bytes we wrote to the buffer
+   */
+  QUILL_NODISCARD_ALWAYS_INLINE_HOT void commit_write(size_t requested_size) noexcept;
+
+  /**
+   * Used to read the raw buffer directly. This is used only when we push PODs
+   * @return nullptr if nothing to read, else the location of the buffer to read
+   * @param min_size minimum size to read
+   */
+  QUILL_NODISCARD_ALWAYS_INLINE_HOT unsigned const char* prepare_read(size_t min_size) noexcept;
+
+  /**
+   * This must be called after reading bytes from the buffer with prepare_read
+   * @param read_size the size we read from the buffer
+   */
+  QUILL_NODISCARD_ALWAYS_INLINE_HOT void finish_read(size_t read_size) noexcept;
+
+  /**
    * @return total capacity of the queue in bytes
    */
   QUILL_NODISCARD constexpr size_t capacity() const noexcept { return _immutable_data.capacity; }
@@ -295,7 +326,7 @@ bool BoundedSPSCQueue<TBaseObject, Capacity>::try_emplace(Args&&... args) noexce
                 "The size of the object is greater than the queue capacity. Increase "
                 "QUILL_QUEUE_CAPACITY to the next power of two.");
 
-  // load the existing head address into the new_head address
+  // load the existing head address
   uint64_t const head_loaded = _shared_head.load(std::memory_order_relaxed);
 
   // Start of buffer where we will put the item if we have enough space
@@ -372,6 +403,82 @@ typename BoundedSPSCQueue<TBaseObject, Capacity>::Handle BoundedSPSCQueue<TBaseO
   // The producer aligns the objects in cache line boundaries so we have to calculate the same
   return Handle(object_base, _shared_tail,
                 tail_loaded + base_obj_size + _distance_from_next_cache_line(buffer_pos, base_obj_size));
+}
+
+/***/
+template <typename TBaseObject, size_t Capacity>
+unsigned char* BoundedSPSCQueue<TBaseObject, Capacity>::prepare_write(size_t requested_size) noexcept
+{
+  // load the existing head address
+  uint64_t const head_loaded = _shared_head.load(std::memory_order_relaxed);
+
+  // The remaining buffer capacity is capacity - (head - tail)
+  // Tail is also only going once direction so we can first check the cached value
+  if (requested_size > _immutable_data.capacity - (head_loaded - _local_cached_tail))
+  {
+    // we can't produce based on the cached tail so lets load the real one
+    // get the updated tail value as the consumer now may have consumed some data
+
+    // Note: here we read the tail as relaxed because we expect to memcpy inside only POD and
+    // there is no destructor to call
+    _local_cached_tail = _shared_tail.load(std::memory_order_relaxed);
+
+    if (QUILL_UNLIKELY(requested_size > _immutable_data.capacity - (head_loaded - _local_cached_tail)))
+    {
+      // not enough space to produce
+      return nullptr;
+    }
+  }
+
+  // we have space for this requested size in the buffer
+
+  // Start of buffer where we will put the item if we have enough space, return the buffer position
+  // of the write
+  return _immutable_data.buffer + (head_loaded & _immutable_data.mask);
+}
+
+/***/
+template <typename TBaseObject, size_t Capacity>
+void BoundedSPSCQueue<TBaseObject, Capacity>::commit_write(size_t requested_size) noexcept
+{
+  // update the head
+  _shared_head.fetch_add(requested_size, std::memory_order_release);
+}
+
+/***/
+template <typename TBaseObject, size_t Capacity>
+unsigned const char* BoundedSPSCQueue<TBaseObject, Capacity>::prepare_read(size_t min_size) noexcept
+{
+  // load the existing head address into the new_head address
+  uint64_t const tail_loaded = _shared_tail.load(std::memory_order_relaxed);
+
+  // Check for data
+  if (_local_cached_head - tail_loaded < min_size)
+  {
+    // We can't consume based on the cached tail but we can load the actual value
+    // and try again see if the producer has produced more data
+    _local_cached_head = _shared_head.load(std::memory_order_acquire);
+
+    if (_local_cached_head - tail_loaded < min_size)
+    {
+      // nothing to consume
+      return nullptr;
+    }
+  }
+
+  // We have data to consume, get the tail pointer position
+  // we don't return the size back or anything - the backend worker thread can figure that out
+  // from the metadata.
+  return _immutable_data.buffer + (tail_loaded & _immutable_data.mask);
+}
+
+/***/
+template <typename TBaseObject, size_t Capacity>
+void BoundedSPSCQueue<TBaseObject, Capacity>::finish_read(size_t read_size) noexcept
+{
+  // Note: here we read the tail as relaxed because we expect to memcpy inside only POD and
+  // there is no destructor to call
+  _shared_tail.fetch_add(read_size, std::memory_order_relaxed);
 }
 
 /***/
