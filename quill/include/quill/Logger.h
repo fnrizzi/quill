@@ -113,75 +113,76 @@ public:
    * @note This function is thread-safe.
    * @param fmt_args format arguments
    */
-  //  template <bool IsBackTraceLogRecord, typename TLogRecordMetadata, typename TFormatString, typename... FmtArgs>
-  //  QUILL_ALWAYS_INLINE_HOT void log(TFormatString format_string, FmtArgs&&... fmt_args)
-  //  {
-  //    check_format(format_string, std::forward<FmtArgs>(fmt_args)...);
-  //
-  //    size_t total_size = sizeof(uint64_t) + sizeof(uintptr_t) + sizeof(uintptr_t);
-  //    detail::get_size_of(total_size, fmt_args...);
-  //
-  //    unsigned char* write_buffer =
-  //      _thread_context_collection.local_thread_context()->fast_spsc_queue().prepare_write(total_size);
-  //
-  //    // write the timestamp first
-  //#if !defined(QUILL_CHRONO_CLOCK)
-  //    uint64_t timestamp{detail::rdtsc()};
-  //#else
-  //    uint64_t timestamp{static_cast<uint64_t>(std::chrono::system_clock::now().time_since_epoch().count())};
-  //#endif
-  //    memcpy(write_buffer, &timestamp, sizeof(timestamp));
-  //    write_buffer += sizeof(timestamp);
-  //
-  //    // Then write the pointer to the LogDataNode
-  //    detail::LogDataNode const* data_node = detail::log_data_node_wrapper<TLogRecordMetadata, FmtArgs...>.log_data_node;
-  //    memcpy(write_buffer, &data_node, sizeof(uintptr_t));
-  //    write_buffer += sizeof(uintptr_t);
-  //
-  //    // Then write the logger details of this logger
-  //    detail::LoggerDetails const* logger_details = std::addressof(_logger_details);
-  //    memcpy(write_buffer, &logger_details, sizeof(uintptr_t));
-  //    write_buffer += sizeof(uintptr_t);
-  //
-  //    // Write all arguments
-  //    detail::store_arguments(write_buffer, fmt_args...);
-  //
-  //    _thread_context_collection.local_thread_context()->fast_spsc_queue().commit_write(total_size);
-  //  }
-
   template <bool IsBackTraceLogRecord, typename TLogRecordMetadata, typename TFormatString, typename... FmtArgs>
   QUILL_ALWAYS_INLINE_HOT void log(TFormatString format_string, FmtArgs&&... fmt_args)
   {
     check_format(format_string, std::forward<FmtArgs>(fmt_args)...);
-    static_assert(
-      detail::is_all_tuple_copy_constructible<FmtArgs...>::value,
-      "The type must be copy constructible. If the type can not be copy constructed it must"
-      "be converted to string on the caller side.");
 
-    // Resolve the type of the record first
-    using log_record_event_t =
-      quill::detail::LogRecordEvent<IsBackTraceLogRecord, TLogRecordMetadata, FmtArgs...>;
+    size_t total_size = sizeof(uint64_t) + sizeof(uintptr_t) + sizeof(uintptr_t);
+    detail::get_size_of(total_size, fmt_args...);
 
-#if !defined(QUILL_MODE_UNSAFE)
-    static_assert(detail::is_copyable_v<typename log_record_event_t::RealTupleT>,
-                  "Trying to copy an unsafe to copy type. Either tag the object with as copy "
-                  "loggable or explicitly format to string before logging.");
-#endif
+    auto write_buffer =
+      _thread_context_collection.local_thread_context()->fast_spsc_queue().reserveProducerSpace(total_size);
 
-#if defined(QUILL_USE_BOUNDED_QUEUE)
-    // emplace to the spsc queue owned by the ctx
-    if (QUILL_UNLIKELY(!_thread_context_collection.local_thread_context()->spsc_queue().try_emplace<log_record_event_t>(
-          std::addressof(_logger_details), std::forward<FmtArgs>(fmt_args)...)))
-    {
-      // not enough space to push to queue message is dropped
-      _thread_context_collection.local_thread_context()->increment_dropped_message_counter();
-    }
+    // write the timestamp first
+#if !defined(QUILL_CHRONO_CLOCK)
+    uint64_t timestamp{detail::rdtsc()};
 #else
-    // emplace to the spsc queue owned by the ctx
-    _thread_context_collection.local_thread_context()->spsc_queue().emplace<log_record_event_t>(
-      std::addressof(_logger_details), std::forward<FmtArgs>(fmt_args)...);
+    uint64_t timestamp{static_cast<uint64_t>(std::chrono::system_clock::now().time_since_epoch().count())};
 #endif
+    memcpy(write_buffer, &timestamp, sizeof(timestamp));
+    write_buffer += sizeof(timestamp);
+
+    // Then write the pointer to the LogDataNode
+    detail::LogDataNode const* data_node =
+      detail::log_data_node_wrapper<TLogRecordMetadata, FmtArgs...>.log_data_node;
+    memcpy(write_buffer, &data_node, sizeof(uintptr_t));
+    write_buffer += sizeof(uintptr_t);
+
+    // Then write the logger details of this logger
+    detail::LoggerDetails const* logger_details = std::addressof(_logger_details);
+    memcpy(write_buffer, &logger_details, sizeof(uintptr_t));
+    write_buffer += sizeof(uintptr_t);
+
+    // Write all arguments
+    detail::store_arguments(write_buffer, fmt_args...);
+
+    _thread_context_collection.local_thread_context()->fast_spsc_queue().finishReservation(total_size);
   }
+
+  //  template <bool IsBackTraceLogRecord, typename TLogRecordMetadata, typename TFormatString, typename... FmtArgs>
+  //  QUILL_ALWAYS_INLINE_HOT void log(TFormatString format_string, FmtArgs&&... fmt_args)
+  //  {
+  //    check_format(format_string, std::forward<FmtArgs>(fmt_args)...);
+  //    static_assert(
+  //      detail::is_all_tuple_copy_constructible<FmtArgs...>::value,
+  //      "The type must be copy constructible. If the type can not be copy constructed it must"
+  //      "be converted to string on the caller side.");
+  //
+  //    // Resolve the type of the record first
+  //    using log_record_event_t =
+  //      quill::detail::LogRecordEvent<IsBackTraceLogRecord, TLogRecordMetadata, FmtArgs...>;
+  //
+  //#if !defined(QUILL_MODE_UNSAFE)
+  //    static_assert(detail::is_copyable_v<typename log_record_event_t::RealTupleT>,
+  //                  "Trying to copy an unsafe to copy type. Either tag the object with as copy "
+  //                  "loggable or explicitly format to string before logging.");
+  //#endif
+  //
+  //#if defined(QUILL_USE_BOUNDED_QUEUE)
+  //    // emplace to the spsc queue owned by the ctx
+  //    if (QUILL_UNLIKELY(!_thread_context_collection.local_thread_context()->spsc_queue().try_emplace<log_record_event_t>(
+  //          std::addressof(_logger_details), std::forward<FmtArgs>(fmt_args)...)))
+  //    {
+  //      // not enough space to push to queue message is dropped
+  //      _thread_context_collection.local_thread_context()->increment_dropped_message_counter();
+  //    }
+  //#else
+  //    // emplace to the spsc queue owned by the ctx
+  //    _thread_context_collection.local_thread_context()->spsc_queue().emplace<log_record_event_t>(
+  //      std::addressof(_logger_details), std::forward<FmtArgs>(fmt_args)...);
+  //#endif
+  //  }
 
   /**
    * Init a backtrace for this logger.

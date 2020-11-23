@@ -163,13 +163,13 @@ inline void get_size_of(size_t& total_size, Arg&& arg, Args&&... args)
 /** Store arguments **/
 
 template <typename T>
-inline void store_argument(unsigned char*& buffer, T const& arg)
+inline void store_argument(char*& buffer, T const& arg)
 {
   memcpy(buffer, &arg, sizeof(T));
   buffer += sizeof(T);
 }
 
-inline void store_argument(unsigned char*& buffer, char* s)
+inline void store_argument(char*& buffer, char* s)
 {
   size_t const len = strlen(s);
   memcpy(buffer, s, len);
@@ -178,7 +178,7 @@ inline void store_argument(unsigned char*& buffer, char* s)
   buffer += 1;
 }
 
-inline void store_argument(unsigned char*& buffer, const char* s)
+inline void store_argument(char*& buffer, const char* s)
 {
   size_t const len = strlen(s);
   memcpy(buffer, s, len);
@@ -187,7 +187,7 @@ inline void store_argument(unsigned char*& buffer, const char* s)
   buffer += 1;
 }
 
-inline void store_argument(unsigned char*& buffer, std::string&& s)
+inline void store_argument(char*& buffer, std::string&& s)
 {
   memcpy(buffer, s.data(), s.length());
   buffer += s.length();
@@ -195,7 +195,7 @@ inline void store_argument(unsigned char*& buffer, std::string&& s)
   buffer += 1;
 }
 
-inline void store_argument(unsigned char*& buffer, std::string const& s)
+inline void store_argument(char*& buffer, std::string const& s)
 {
   memcpy(buffer, s.data(), s.length());
   buffer += s.length();
@@ -204,7 +204,7 @@ inline void store_argument(unsigned char*& buffer, std::string const& s)
 }
 
 template <typename T, size_t N>
-inline size_t store_argument(unsigned char*& buffer, char* s)
+inline size_t store_argument(char*& buffer, char* s)
 {
   memcpy(buffer, s, N);
   buffer += N;
@@ -213,13 +213,13 @@ inline size_t store_argument(unsigned char*& buffer, char* s)
 }
 
 template <typename Arg>
-inline void store_arguments(unsigned char*& buffer, Arg&& arg)
+inline void store_arguments(char*& buffer, Arg&& arg)
 {
   store_argument(buffer, std::forward<Arg>(arg));
 }
 
 template <typename Arg, typename... Args>
-inline void store_arguments(unsigned char*& buffer, Arg&& arg, Args&&... args)
+inline void store_arguments(char*& buffer, Arg&& arg, Args&&... args)
 {
   store_argument(buffer, std::forward<Arg>(arg));
   store_arguments(buffer, std::forward<Args>(args)...);

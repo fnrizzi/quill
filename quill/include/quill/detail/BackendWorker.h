@@ -330,7 +330,7 @@ void BackendWorker::_populate_priority_queue(ThreadContextCollection::backend_th
     }
 
     // Read the fast queue
-    ThreadContext::SPSCQueueT& fast_spsc_queue = thread_context->fast_spsc_queue();
+    ThreadContext::FastSPSCQueueT& fast_spsc_queue = thread_context->fast_spsc_queue();
 
     while (true)
     {
@@ -340,9 +340,9 @@ void BackendWorker::_populate_priority_queue(ThreadContextCollection::backend_th
       // |timestamp|log_data_node*|logger_details*|args...|
 
       // We want to read a minimum size of uint64_t (the size of the timestamp)
-      auto const* read_buffer = fast_spsc_queue.prepare_read(sizeof(uint64_t));
-
-      if (!read_buffer)
+      uint64_t bytes_available;
+      auto read_buffer = fast_spsc_queue.peek(&bytes_available);
+      if (bytes_available == 0)
       {
         // nothing to read
         break;
@@ -481,7 +481,7 @@ void BackendWorker::_populate_priority_queue(ThreadContextCollection::backend_th
       }
 
       // Finish reading
-      fast_spsc_queue.finish_read(sizeof(uint64_t) + sizeof(uintptr_t) + sizeof(uintptr_t) + read_size);
+      fast_spsc_queue.consume(sizeof(uint64_t) + sizeof(uintptr_t) + sizeof(uintptr_t) + read_size);
 
       // We have the timestamp and the data node ptr, we can construct a transit event out of them
       _transit_events.emplace(thread_context, timestamp, data_node, logger_details, std::move(fmt_store));
