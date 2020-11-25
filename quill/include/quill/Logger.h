@@ -122,7 +122,7 @@ public:
     detail::get_size_of(total_size, fmt_args...);
 
     auto write_buffer =
-      _thread_context_collection.local_thread_context()->fast_spsc_queue().reserveProducerSpace(total_size);
+      _thread_context_collection.local_thread_context()->fast_spsc_queue().prepare_write(total_size);
 
     // write the timestamp first
 #if !defined(QUILL_CHRONO_CLOCK)
@@ -147,7 +147,7 @@ public:
     // Write all arguments
     detail::store_arguments(write_buffer, fmt_args...);
 
-    _thread_context_collection.local_thread_context()->fast_spsc_queue().finishReservation(total_size);
+    _thread_context_collection.local_thread_context()->fast_spsc_queue().commit_write(total_size);
   }
 
   //  template <bool IsBackTraceLogRecord, typename TLogRecordMetadata, typename TFormatString, typename... FmtArgs>
