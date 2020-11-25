@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include "quill/detail/BoundedSPSCQueue2.h"
 #include "quill/detail/misc/Attributes.h"
 #include "quill/detail/misc/Macros.h"
 #include "quill/detail/misc/Os.h"
@@ -42,7 +43,7 @@ namespace detail
  * @tparam TBaseObject A base class type
  */
 template <typename TBaseObject, size_t Capacity>
-class BoundedSPSCQueue
+class BoundedSPSCQueue : private StagingBuffer
 {
 public:
   using value_type = TBaseObject;
@@ -62,12 +63,12 @@ public:
      * Move constructor
      */
     Handle(Handle&& other) noexcept
-      : _data(other._data), _indicator(other._indicator), _indicator_value(other._indicator_value)
+      : _data(other._data), _queue_ref(other._queue_ref), _read_size(other._read_size)
     {
       // invalidate other
-      other._indicator = nullptr;
+      other._queue_ref = nullptr;
       other._data = nullptr;
-      other._indicator_value = 0;
+      other._read_size = 0;
     }
 
     /**
@@ -76,8 +77,8 @@ public:
     Handle& operator=(Handle&& other) noexcept
     {
       std::swap(_data, other._data);
-      std::swap(_indicator, other._indicator);
-      std::swap(_indicator_value, other._indicator_value);
+      std::swap(_queue_ref, other._queue_ref);
+      std::swap(_read_size, other._read_size);
       return *this;
     }
 
@@ -90,7 +91,7 @@ public:
       if (is_valid())
       {
         _destroy();
-        _indicator->store(_indicator_value, std::memory_order_release);
+        _queue_ref->finish_read(_read_size);
       }
     }
 
@@ -109,14 +110,14 @@ public:
      * Checks the validity of this handle.
      * @return True if valid, otherwise false.
      */
-    QUILL_NODISCARD bool is_valid() const noexcept { return static_cast<bool>(_indicator); }
+    QUILL_NODISCARD bool is_valid() const noexcept { return static_cast<bool>(_queue_ref); }
 
     /**
      * Release will release the handle without incrementing the tail.
      * This can be used if you want to observe a value without removing it from the queue
      * Calling queue.pop() again after release will return a Handle to the same object
      */
-    void release() noexcept { _indicator = nullptr; }
+    void release() noexcept { _queue_ref = nullptr; }
 
   private:
     friend class BoundedSPSCQueue;
@@ -125,8 +126,8 @@ public:
      * Private constructor
      * Only this constructor creates a valid handle
      */
-    Handle(value_type* data, std::atomic<uint64_t>& indicator, uint64_t indicator_value) noexcept
-      : _data(data), _indicator(&indicator), _indicator_value(indicator_value)
+    Handle(value_type* data, StagingBuffer* queue_ref, size_t read_size) noexcept
+      : _data(data), _queue_ref(queue_ref), _read_size(read_size)
     {
     }
 
@@ -149,8 +150,8 @@ public:
 
   private:
     value_type* _data{nullptr}; /**< The data */
-    std::atomic<uint64_t>* _indicator{nullptr};
-    uint64_t _indicator_value{0};
+    StagingBuffer* _queue_ref{nullptr};
+    size_t _read_size{0};
   };
 
 public:
@@ -160,12 +161,12 @@ public:
    * Circular Buffer class Constructor
    * @throws on system error
    */
-  explicit BoundedSPSCQueue();
+  BoundedSPSCQueue() = default;
 
   /**
    * Destructor
    */
-  ~BoundedSPSCQueue();
+  ~BoundedSPSCQueue() = default;
 
   /**
    * Deleted
@@ -195,45 +196,19 @@ public:
   QUILL_NODISCARD_ALWAYS_INLINE_HOT Handle try_pop() noexcept;
 
   /**
-   * Used if instead of pushing an object we want to get the raw memory inside the buffer to
-   * write the object ourselves.
-   * This is used for POD only types to directly memcpy them inside the buffer
-   * @note: has to be used along with commit_write
-   * @param requested_size the size we want to copy
-   * @return Buffer begin to write the object or nullptr otherwise
-   */
-  QUILL_NODISCARD_ALWAYS_INLINE_HOT unsigned char* prepare_write(size_t requested_size) noexcept;
-
-  /**
-   * Must be called after prepare_write to commit the write to the buffer and make the consumer
-   * thread aware of the write
-   * @note: must be used after prepare_write
-   * @param requested_size size of bytes we wrote to the buffer
-   */
-  QUILL_NODISCARD_ALWAYS_INLINE_HOT void commit_write(size_t requested_size) noexcept;
-
-  /**
-   * Used to read the raw buffer directly. This is used only when we push PODs
-   * @return nullptr if nothing to read, else the location of the buffer to read
-   * @param min_size minimum size to read
-   */
-  QUILL_NODISCARD_ALWAYS_INLINE_HOT unsigned const char* prepare_read(size_t min_size) noexcept;
-
-  /**
-   * This must be called after reading bytes from the buffer with prepare_read
-   * @param read_size the size we read from the buffer
-   */
-  QUILL_NODISCARD_ALWAYS_INLINE_HOT void finish_read(size_t read_size) noexcept;
-
-  /**
    * @return total capacity of the queue in bytes
    */
-  QUILL_NODISCARD constexpr size_t capacity() const noexcept { return _immutable_data.capacity; }
+  // QUILL_NODISCARD constexpr size_t capacity() const noexcept { return _immutable_data.capacity; }
 
   /**
    * @return True when the queue is empty, false if there is still data to read
    */
-  QUILL_NODISCARD bool empty() const noexcept;
+  QUILL_NODISCARD bool empty() const noexcept
+  {
+    return _producer_pos.load(std::memory_order_relaxed) == _storage;
+  }
+
+  QUILL_NODISCARD size_t capacity() const noexcept { return STAGING_BUFFER_SIZE; }
 
 private:
   /**
@@ -246,75 +221,13 @@ private:
    */
   QUILL_NODISCARD_ALWAYS_INLINE_HOT static size_t _distance_from_next_cache_line(unsigned char* start_pos,
                                                                                  size_t obj_size) noexcept;
-
-private:
-  /** Shared state - Never modified after initialisation */
-  struct immutable_data
-  {
-    unsigned char* buffer{nullptr}; /**< The whole buffer */
-    static constexpr size_t capacity{Capacity};
-    static constexpr size_t mask{Capacity - 1}; /** capacity - 1 mask for quick mod with &. Only for pow of 2 capacity */
-
-#if defined(_WIN32)
-    /**
-     * For windows we have to store an extra pointer that we will give later to free. This is defined
-     */
-    void* mapped_file_handler{nullptr};
-#endif
-  };
-
-  /** Members **/
-  alignas(CACHELINE_SIZE) immutable_data _immutable_data;
-
-  /** Shared mutable state - Both consumer and producer can read and write on each variable */
-  alignas(CACHELINE_SIZE) std::atomic<uint64_t> _shared_head{0}; /**< The index of the head */
-  alignas(CACHELINE_SIZE) std::atomic<uint64_t> _shared_tail{0}; /**< The index of the tail */
-
-  /** Local state - modified by either the producer or consumer, but never both **/
-  alignas(CACHELINE_SIZE) uint64_t _local_cached_head{0}; /**< cached head index */
-  alignas(CACHELINE_SIZE) uint64_t _local_cached_tail{0}; /**< cached tail index */
-  char _pad0[detail::CACHELINE_SIZE - sizeof(uint64_t)] = "\0";
 };
-
-/***/
-template <typename TBaseObject, size_t Capacity>
-BoundedSPSCQueue<TBaseObject, Capacity>::BoundedSPSCQueue()
-{
-  std::pair<unsigned char*, void*> res = create_memory_mapped_files(_immutable_data.capacity);
-
-  assert((reinterpret_cast<uintptr_t>(res.first) % CACHELINE_SIZE) == 0 &&
-         "We must start with a cache aligned address");
-
-  // Save the returned address
-  _immutable_data.buffer = res.first;
-
-#if defined(_WIN32)
-  // On windows we have to store the extra pointer, for linux and macos it is just nullptr
-  _immutable_data.mapped_file_handler = res.second;
-#endif
-
-  madvice();
-}
-
-/***/
-template <typename TBaseObject, size_t Capacity>
-BoundedSPSCQueue<TBaseObject, Capacity>::~BoundedSPSCQueue()
-{
-#if defined(_WIN32)
-  destroy_memory_mapped_files(
-    std::pair<unsigned char*, void*>{_immutable_data.buffer, _immutable_data.mapped_file_handler},
-    _immutable_data.capacity);
-#else
-  destroy_memory_mapped_files(std::pair<unsigned char*, void*>{_immutable_data.buffer, nullptr},
-                              _immutable_data.capacity);
-#endif
-}
 
 /***/
 template <typename TBaseObject, size_t Capacity>
 void BoundedSPSCQueue<TBaseObject, Capacity>::madvice() const
 {
-  detail::madvice(_immutable_data.buffer, 2 * _immutable_data.capacity);
+  // detail::madvice(_immutable_data.buffer, 2 * _immutable_data.capacity);
 }
 
 /***/
@@ -326,39 +239,26 @@ bool BoundedSPSCQueue<TBaseObject, Capacity>::try_emplace(Args&&... args) noexce
                 "The size of the object is greater than the queue capacity. Increase "
                 "QUILL_QUEUE_CAPACITY to the next power of two.");
 
-  // load the existing head address
-  uint64_t const head_loaded = _shared_head.load(std::memory_order_relaxed);
-
-  // Start of buffer where we will put the item if we have enough space
-  unsigned char* buffer_pos = _immutable_data.buffer + (head_loaded & _immutable_data.mask);
-
   // We will align all non trivial objects to cache line boundaries to avoid false sharing when we
-  // call the destructor. We calculate the remaining bytes until the end of this cache line
-  // and add them to the size
-  size_t const obj_size =
-    sizeof(TInsertedObject) + _distance_from_next_cache_line(buffer_pos, sizeof(TInsertedObject));
+  // call the destructor.
+  // We calculate the remaining bytes until the end of this cache line and add them to the size
+  size_t const obj_size = sizeof(TInsertedObject) +
+    _distance_from_next_cache_line(_producer_pos.load(std::memory_order_relaxed), sizeof(TInsertedObject));
 
-  // The remaining buffer capacity is capacity - (head - tail)
-  // Tail is also only going once direction so we can first check the cached value
-  if (obj_size > _immutable_data.capacity - (head_loaded - _local_cached_tail))
+  // We want to know if we have enough space in the buffer to store the object
+  unsigned char* write_buffer = prepare_write(obj_size);
+
+  if (QUILL_UNLIKELY(write_buffer == nullptr))
   {
-    // we can't produce based on the cached tail so lets load the real one
-    // get the updated tail value as the consumer now may have consumed some data
-    _local_cached_tail = _shared_tail.load(std::memory_order_acquire);
-
-    if (QUILL_UNLIKELY(obj_size > _immutable_data.capacity - (head_loaded - _local_cached_tail)))
-    {
-      // not enough space to produce
-      return false;
-    }
+    // not enough space to produce
+    return false;
   }
 
-  // Get the pointer to the beginning of the buffer
-  // copy construct the Message there
-  new (buffer_pos) TInsertedObject{std::forward<Args>(args)...};
+  // emplace construct the Message there
+  new (write_buffer) TInsertedObject{std::forward<Args>(args)...};
 
-  // update the head
-  _shared_head.store(head_loaded + obj_size, std::memory_order_release);
+  // update the buffer with the write
+  commit_write(obj_size);
 
   return true;
 }
@@ -370,122 +270,31 @@ typename BoundedSPSCQueue<TBaseObject, Capacity>::Handle BoundedSPSCQueue<TBaseO
   // we have been asked to consume but we don't know yet how much to consume
   // e.g object T might be a base class
 
-  // load the existing head address into the new_head address
-  uint64_t const tail_loaded = _shared_tail.load(std::memory_order_relaxed);
+  auto const buffer_span = prepare_read();
 
-  // Check for data
-  if (_local_cached_head == tail_loaded)
+  if (buffer_span.second == 0)
   {
-    // We can't consume based on the cached tail but we can load the actual value
-    // and try again see if the producer has produced more data
-    _local_cached_head = _shared_head.load(std::memory_order_acquire);
-
-    if (_local_cached_head == tail_loaded)
-    {
-      // nothing to consume
-      return Handle{};
-    }
+    // nothing to consume
+    return Handle{};
   }
 
-  // Get the tail pointer (beginning of the new object)
-  unsigned char* buffer_pos = _immutable_data.buffer + (tail_loaded & _immutable_data.mask);
+  // Get the beginning of the new object
+  unsigned char* read_buffer = buffer_span.first;
 
-  assert((reinterpret_cast<uintptr_t>(buffer_pos) % CACHELINE_SIZE == 0) &&
+  assert((reinterpret_cast<uintptr_t>(read_buffer) % CACHELINE_SIZE == 0) &&
          "Object should always be cache aligned");
 
   // Get the new object
-  auto object_base = reinterpret_cast<value_type*>(buffer_pos);
+  auto object_base = reinterpret_cast<value_type*>(read_buffer);
 
   // Get the size of the object via the virtual function
   size_t const base_obj_size = object_base->size();
 
-  // Return a Handle to the user for this object and increment the tail.
-  // The producer aligns the objects in cache line boundaries so we have to calculate the same
-  return Handle(object_base, _shared_tail,
-                tail_loaded + base_obj_size + _distance_from_next_cache_line(buffer_pos, base_obj_size));
-}
+  // The real object size will be until the end of the cache line
+  size_t const total_obj_size = base_obj_size + _distance_from_next_cache_line(read_buffer, base_obj_size);
 
-/***/
-template <typename TBaseObject, size_t Capacity>
-unsigned char* BoundedSPSCQueue<TBaseObject, Capacity>::prepare_write(size_t requested_size) noexcept
-{
-  // load the existing head address
-  uint64_t const head_loaded = _shared_head.load(std::memory_order_relaxed);
-
-  // The remaining buffer capacity is capacity - (head - tail)
-  // Tail is also only going once direction so we can first check the cached value
-  if (requested_size > _immutable_data.capacity - (head_loaded - _local_cached_tail))
-  {
-    // we can't produce based on the cached tail so lets load the real one
-    // get the updated tail value as the consumer now may have consumed some data
-
-    // Note: here we read the tail as relaxed because we expect to memcpy inside only POD and
-    // there is no destructor to call
-    _local_cached_tail = _shared_tail.load(std::memory_order_relaxed);
-
-    if (QUILL_UNLIKELY(requested_size > _immutable_data.capacity - (head_loaded - _local_cached_tail)))
-    {
-      // not enough space to produce
-      return nullptr;
-    }
-  }
-
-  // we have space for this requested size in the buffer
-
-  // Start of buffer where we will put the item if we have enough space, return the buffer position
-  // of the write
-  return _immutable_data.buffer + (head_loaded & _immutable_data.mask);
-}
-
-/***/
-template <typename TBaseObject, size_t Capacity>
-void BoundedSPSCQueue<TBaseObject, Capacity>::commit_write(size_t requested_size) noexcept
-{
-  // update the head
-  _shared_head.fetch_add(requested_size, std::memory_order_release);
-}
-
-/***/
-template <typename TBaseObject, size_t Capacity>
-unsigned const char* BoundedSPSCQueue<TBaseObject, Capacity>::prepare_read(size_t min_size) noexcept
-{
-  // load the existing head address into the new_head address
-  uint64_t const tail_loaded = _shared_tail.load(std::memory_order_relaxed);
-
-  // Check for data
-  if (_local_cached_head - tail_loaded < min_size)
-  {
-    // We can't consume based on the cached tail but we can load the actual value
-    // and try again see if the producer has produced more data
-    _local_cached_head = _shared_head.load(std::memory_order_acquire);
-
-    if (_local_cached_head - tail_loaded < min_size)
-    {
-      // nothing to consume
-      return nullptr;
-    }
-  }
-
-  // We have data to consume, get the tail pointer position
-  // we don't return the size back or anything - the backend worker thread can figure that out
-  // from the metadata.
-  return _immutable_data.buffer + (tail_loaded & _immutable_data.mask);
-}
-
-/***/
-template <typename TBaseObject, size_t Capacity>
-void BoundedSPSCQueue<TBaseObject, Capacity>::finish_read(size_t read_size) noexcept
-{
-  // Note: here we read the tail as relaxed because we expect to memcpy inside only POD and
-  // there is no destructor to call
-  _shared_tail.fetch_add(read_size, std::memory_order_relaxed);
-}
-
-/***/
-template <typename TBaseObject, size_t Capacity>
-bool BoundedSPSCQueue<TBaseObject, Capacity>::empty() const noexcept
-{
-  return _shared_head.load(std::memory_order_relaxed) == _shared_tail.load(std::memory_order_relaxed);
+  // Return a Handle to the user for this object
+  return Handle(object_base, this, total_obj_size);
 }
 
 /***/

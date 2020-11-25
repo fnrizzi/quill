@@ -1,3 +1,5 @@
+#pragma once
+
 #include "quill/detail/misc/Attributes.h"
 #include "quill/detail/misc/Macros.h"
 
@@ -140,7 +142,6 @@ public:
     bytes_available = static_cast<size_t>(producer_pos - consumer_pos);
 
     return std::make_pair(consumer_pos, bytes_available);
-    ;
   }
 
   /**
@@ -153,7 +154,7 @@ public:
     _consumer_pos.store(_consumer_pos.load(std::memory_order_relaxed) + nbytes, std::memory_order_relaxed);
   }
 
-private:
+protected:
   // Backing store used to implement the circular queue
   alignas(64) unsigned char _storage[STAGING_BUFFER_SIZE] = {};
 
