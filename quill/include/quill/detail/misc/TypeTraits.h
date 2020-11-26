@@ -5,8 +5,9 @@
 
 #pragma once
 
-#include "quill/detail/misc/TypeTraitsCopyable.h"
 #include "quill/detail/misc/Attributes.h"
+#include "quill/detail/misc/TypeTraitsCopyable.h"
+#include "quill/detail/misc/TypeTraitsSerializable.h"
 
 #if (QUILL_HAS_INCLUDE(<string_view>) && (__cplusplus > 201402L || defined(_LIBCPP_VERSION))) ||   \
   (defined(_MSVC_LANG) && (_MSVC_LANG > 201402L) && (_MSC_VER >= 1910))
@@ -95,7 +96,7 @@ struct UnwrapRefWrapper
   using type = T;
 };
 
-template <class T>
+template <typename T>
 struct UnwrapRefWrapper<std::reference_wrapper<T>>
 {
   using type = T&;
@@ -130,7 +131,7 @@ struct any_is_same<TSame, TFirst> : std::is_same<TSame, std::decay_t<TFirst>>
  * For non class types e.g. ints we always want to default to true
  */
 template <typename T, typename R = void>
-struct is_all_tuple_copy_constructible_helper : std::true_type
+struct is_all_copy_constructible_helper : std::true_type
 {
 };
 
@@ -138,15 +139,15 @@ struct is_all_tuple_copy_constructible_helper : std::true_type
  * Enable only for classes
  */
 template <typename T>
-struct is_all_tuple_copy_constructible_helper<T, std::enable_if_t<std::is_class<T>::value>>
+struct is_all_copy_constructible_helper<T, std::enable_if_t<std::is_class<T>::value>>
   : std::is_copy_constructible<T>
 {
 };
 
 template <typename... TArgs>
-struct is_all_tuple_copy_constructible
-  : conjunction<is_all_tuple_copy_constructible_helper<remove_cvref_t<TArgs>>...>
+struct is_all_copy_constructible : conjunction<is_all_copy_constructible_helper<remove_cvref_t<TArgs>>...>
 {
 };
+
 } // namespace detail
 } // namespace quill

@@ -29,6 +29,7 @@ set(SOURCE_FILES
         TimeRotatingFileHandlerTest.cpp
         TimestampFormatterTest.cpp
         TypeTraitsCopyableTest.cpp
+        TypeTraitsSerializableTest.cpp
         UtilitiesTest.cpp
         UtilityTest.cpp
         )

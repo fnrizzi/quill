@@ -26,6 +26,7 @@ set(HEADER_FILES
         include/quill/detail/misc/Utilities.h
         include/quill/detail/misc/TypeTraits.h
         include/quill/detail/misc/TypeTraitsCopyable.h
+        include/quill/detail/misc/TypeTraitsSerializable.h
         include/quill/detail/events/BacktraceEvent.h
         include/quill/detail/events/FlushEvent.h
         include/quill/detail/events/LogRecordEvent.h
@@ -37,6 +38,7 @@ set(HEADER_FILES
         include/quill/detail/BoundedSPSCRawQueue.h
         include/quill/detail/Config.h
         include/quill/detail/HandlerCollection.h
+        include/quill/detail/LogDataNode.h
         include/quill/detail/LoggerCollection.h
         include/quill/detail/LoggerDetails.h
         include/quill/detail/LogMacros.h

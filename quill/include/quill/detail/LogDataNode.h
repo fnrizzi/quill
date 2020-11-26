@@ -145,6 +145,11 @@ inline size_t get_size(char*)
   return N + 1;
 }
 
+inline void get_size_of(size_t&)
+{
+  // no arguments
+}
+
 template <typename Arg>
 inline void get_size_of(size_t& total_size, Arg&& arg)
 {
@@ -210,6 +215,11 @@ inline size_t store_argument(unsigned char*& buffer, char* s)
   buffer += N;
   *buffer = '\0';
   buffer += 1;
+}
+
+inline void store_arguments(unsigned char*&)
+{
+  // no arguments
 }
 
 template <typename Arg>

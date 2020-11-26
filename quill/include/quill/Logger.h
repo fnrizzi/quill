@@ -109,53 +109,83 @@ public:
 
   /**
    * Push a log record event to the spsc queue to be logged by the backend thread.
-   * One queue per caller thread.
+   * One spsc queue per caller thread. This function is enabled only when all arguments are
+   * fundamental types.
+   * This is the fastest way possible to log
    * @note This function is thread-safe.
    * @param fmt_args format arguments
    */
-  //  template <bool IsBackTraceLogRecord, typename TLogRecordMetadata, typename TFormatString, typename... FmtArgs>
-  //  QUILL_ALWAYS_INLINE_HOT void log(TFormatString format_string, FmtArgs&&... fmt_args)
-  //  {
-  //    check_format(format_string, std::forward<FmtArgs>(fmt_args)...);
-  //
-  //    size_t total_size = sizeof(uint64_t) + sizeof(uintptr_t) + sizeof(uintptr_t);
-  //    detail::get_size_of(total_size, fmt_args...);
-  //
-  //    auto write_buffer =
-  //      _thread_context_collection.local_thread_context()->raw_spsc_queue().prepare_write(total_size);
-  //
-  //    // write the timestamp first
-  //#if !defined(QUILL_CHRONO_CLOCK)
-  //    uint64_t timestamp{detail::rdtsc()};
-  //#else
-  //    uint64_t timestamp{static_cast<uint64_t>(std::chrono::system_clock::now().time_since_epoch().count())};
-  //#endif
-  //    memcpy(write_buffer, &timestamp, sizeof(timestamp));
-  //    write_buffer += sizeof(timestamp);
-  //
-  //    // Then write the pointer to the LogDataNode
-  //    detail::LogDataNode const* data_node =
-  //      detail::log_data_node_wrapper<TLogRecordMetadata, FmtArgs...>.log_data_node;
-  //    memcpy(write_buffer, &data_node, sizeof(uintptr_t));
-  //    write_buffer += sizeof(uintptr_t);
-  //
-  //    // Then write the logger details of this logger
-  //    detail::LoggerDetails const* logger_details = std::addressof(_logger_details);
-  //    memcpy(write_buffer, &logger_details, sizeof(uintptr_t));
-  //    write_buffer += sizeof(uintptr_t);
-  //
-  //    // Write all arguments
-  //    detail::store_arguments(write_buffer, fmt_args...);
-  //
-  //    _thread_context_collection.local_thread_context()->raw_spsc_queue().commit_write(total_size);
-  //  }
-
   template <bool IsBackTraceLogRecord, typename TLogRecordMetadata, typename TFormatString, typename... FmtArgs>
-  QUILL_ALWAYS_INLINE_HOT void log(TFormatString format_string, FmtArgs&&... fmt_args)
+  QUILL_ALWAYS_INLINE_HOT std::enable_if_t<detail::is_all_serializable<FmtArgs...>::value && !IsBackTraceLogRecord, void> log(
+    TFormatString format_string, FmtArgs&&... fmt_args)
+  {
+    check_format(format_string, std::forward<FmtArgs>(fmt_args)...);
+
+    // We want timestamp + log_data_node pointer + logger_details pointer + the size of all arguments
+    size_t total_size = sizeof(uint64_t) + sizeof(uintptr_t) + sizeof(uintptr_t);
+    detail::get_size_of(total_size, fmt_args...);
+
+    // request this size from the queue
+    unsigned char* write_buffer =
+      _thread_context_collection.local_thread_context()->raw_spsc_queue().prepare_write(total_size);
+
+#if defined(QUILL_USE_BOUNDED_QUEUE)
+    // emplace to the spsc queue owned by the ctx
+    if (QUILL_UNLIKELY(write_buffer == nullptr)
+    {
+      // not enough space to push to queue message is dropped
+      _thread_context_collection.local_thread_context()->increment_dropped_message_counter();
+    }
+#else
+    // we have enough space in this buffer and we will write to the buffer
+
+    // write the timestamp first
+  #if !defined(QUILL_CHRONO_CLOCK)
+    uint64_t timestamp{detail::rdtsc()};
+  #else
+    uint64_t timestamp{static_cast<uint64_t>(std::chrono::system_clock::now().time_since_epoch().count())};
+  #endif
+    memcpy(write_buffer, &timestamp, sizeof(timestamp));
+    write_buffer += sizeof(timestamp);
+
+    // Then write the pointer to the LogDataNode. The LogDataNode has all details on how to deserialize
+    // the object. We wil just serialize the arguments in our queue but we need to look up their
+    // types to deserialize them
+    // Note: The LogDataNode here is created during program init time, in runtime we just get it's pointer
+    detail::LogDataNode const* data_node =
+      detail::log_data_node_wrapper<TLogRecordMetadata, FmtArgs...>.log_data_node;
+    memcpy(write_buffer, &data_node, sizeof(uintptr_t));
+    write_buffer += sizeof(uintptr_t);
+
+    // Then write the pointer to the logger details of this logger
+    detail::LoggerDetails const* logger_details = std::addressof(_logger_details);
+    memcpy(write_buffer, &logger_details, sizeof(uintptr_t));
+    write_buffer += sizeof(uintptr_t);
+
+    // Write all arguments
+    detail::store_arguments(write_buffer, fmt_args...);
+
+    _thread_context_collection.local_thread_context()->raw_spsc_queue().commit_write(total_size);
+#endif
+  }
+
+  /**
+   * Push a log record event to the spsc queue to be logged by the backend thread.
+   * One spsc queue per caller thread. This function is used when the we want to log more
+   * complex types
+   * This is slightly slower to log than the other function.
+   * Instead of copying the arguments directly to the buffer instead we will put them in a tuple
+   * and push that tuple to the spsc queue
+   * @note This function is thread-safe.
+   * @param fmt_args format arguments
+   */
+  template <bool IsBackTraceLogRecord, typename TLogRecordMetadata, typename TFormatString, typename... FmtArgs>
+  QUILL_ALWAYS_INLINE_HOT std::enable_if_t<!detail::is_all_serializable<FmtArgs...>::value || IsBackTraceLogRecord, void> log(
+    TFormatString format_string, FmtArgs&&... fmt_args)
   {
     check_format(format_string, std::forward<FmtArgs>(fmt_args)...);
     static_assert(
-      detail::is_all_tuple_copy_constructible<FmtArgs...>::value,
+      detail::is_all_copy_constructible<FmtArgs...>::value,
       "The type must be copy constructible. If the type can not be copy constructed it must"
       "be converted to string on the caller side.");
 
