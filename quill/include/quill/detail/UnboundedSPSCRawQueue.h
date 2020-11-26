@@ -139,7 +139,7 @@ public:
    * @note: must be used after prepare_write
    * @param requested_size size of bytes we wrote to the buffer
    */
-  QUILL_NODISCARD_ALWAYS_INLINE_HOT void commit_write(size_t nbytes) noexcept
+  QUILL_ALWAYS_INLINE_HOT void commit_write(size_t nbytes) noexcept
   {
     _producer->bounded_spsc_queue.commit_write(nbytes);
   }
@@ -181,7 +181,7 @@ public:
    * This must be called after reading bytes from the buffer with prepare_read
    * @param read_size the size we read from the buffer
    */
-  QUILL_NODISCARD_ALWAYS_INLINE_HOT void finish_read(size_t nbytes) noexcept
+  QUILL_ALWAYS_INLINE_HOT void finish_read(size_t nbytes) noexcept
   {
     _consumer->bounded_spsc_queue.finish_read(nbytes);
   }

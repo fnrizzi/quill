@@ -209,7 +209,7 @@ inline void store_argument(unsigned char*& buffer, std::string const& s)
 }
 
 template <typename T, size_t N>
-inline size_t store_argument(unsigned char*& buffer, char* s)
+inline void store_argument(unsigned char*& buffer, char* s)
 {
   memcpy(buffer, s, N);
   buffer += N;
