@@ -33,7 +33,8 @@ set(HEADER_FILES
         include/quill/detail/events/LogRecordMetadata.h
         include/quill/detail/BackendWorker.h
         include/quill/detail/BacktraceLogRecordStorage.h
-        include/quill/detail/BoundedSPSCQueue.h
+        include/quill/detail/BoundedSPSCObjectQueue.h
+        include/quill/detail/BoundedSPSCRawQueue.h
         include/quill/detail/Config.h
         include/quill/detail/HandlerCollection.h
         include/quill/detail/LoggerCollection.h
@@ -45,7 +46,8 @@ set(HEADER_FILES
         include/quill/detail/ThreadContextCollection.h
         include/quill/detail/SignalHandler.h
         include/quill/detail/TimestampFormatter.h
-        include/quill/detail/UnboundedSPSCQueue.h
+        include/quill/detail/UnboundedSPSCObjectQueue.h
+        include/quill/detail/UnboundedSPSCRawQueue.h
         include/quill/filters/FilterBase.h
         include/quill/handlers/ConsoleHandler.h
         include/quill/handlers/FileHandler.h

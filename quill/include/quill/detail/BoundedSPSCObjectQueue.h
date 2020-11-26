@@ -5,7 +5,7 @@
 
 #pragma once
 
-#include "quill/detail/BoundedSPSCQueue2.h"
+#include "quill/detail/BoundedSPSCRawQueue.h"
 #include "quill/detail/misc/Attributes.h"
 #include "quill/detail/misc/Macros.h"
 #include "quill/detail/misc/Os.h"
@@ -24,12 +24,6 @@ namespace detail
  * Because we don't know the type of the object when we pop() we should pop() a base class
  * object and then call a virtual method on it.
  *
- * The queue is implemented as a circular buffer and must always be a power of two to optimise the
- * wrapping operations by using a simple mod mask.
- *
- * The circular buffer is also backed by an anonymous file in order to
- * not have to worry if the objects fits in the buffer in the case we have to wrap around.
- *
  * This queue is meant to be used when you want to store variable sized objects.
  *
  * Usage :
@@ -43,7 +37,7 @@ namespace detail
  * @tparam TBaseObject A base class type
  */
 template <typename TBaseObject, size_t Capacity>
-class BoundedSPSCQueue : private StagingBuffer
+class BoundedSPSCObjectQueue : private BoundedSPSCRawQueue<Capacity>
 {
 public:
   using value_type = TBaseObject;
@@ -63,10 +57,10 @@ public:
      * Move constructor
      */
     Handle(Handle&& other) noexcept
-      : _data(other._data), _queue_ref(other._queue_ref), _read_size(other._read_size)
+      : _data(other._data), _buffer_ref(other._buffer_ref), _read_size(other._read_size)
     {
       // invalidate other
-      other._queue_ref = nullptr;
+      other._buffer_ref = nullptr;
       other._data = nullptr;
       other._read_size = 0;
     }
@@ -77,7 +71,7 @@ public:
     Handle& operator=(Handle&& other) noexcept
     {
       std::swap(_data, other._data);
-      std::swap(_queue_ref, other._queue_ref);
+      std::swap(_buffer_ref, other._buffer_ref);
       std::swap(_read_size, other._read_size);
       return *this;
     }
@@ -91,7 +85,7 @@ public:
       if (is_valid())
       {
         _destroy();
-        _queue_ref->finish_read(_read_size);
+        _buffer_ref->finish_read(_read_size);
       }
     }
 
@@ -110,24 +104,24 @@ public:
      * Checks the validity of this handle.
      * @return True if valid, otherwise false.
      */
-    QUILL_NODISCARD bool is_valid() const noexcept { return static_cast<bool>(_queue_ref); }
+    QUILL_NODISCARD bool is_valid() const noexcept { return static_cast<bool>(_buffer_ref); }
 
     /**
      * Release will release the handle without incrementing the tail.
      * This can be used if you want to observe a value without removing it from the queue
      * Calling queue.pop() again after release will return a Handle to the same object
      */
-    void release() noexcept { _queue_ref = nullptr; }
+    void release() noexcept { _buffer_ref = nullptr; }
 
   private:
-    friend class BoundedSPSCQueue;
+    friend class BoundedSPSCObjectQueue;
 
     /**
      * Private constructor
      * Only this constructor creates a valid handle
      */
-    Handle(value_type* data, StagingBuffer* queue_ref, size_t read_size) noexcept
-      : _data(data), _queue_ref(queue_ref), _read_size(read_size)
+    Handle(value_type* data, BoundedSPSCRawQueue<Capacity>* queue_ref, size_t read_size) noexcept
+      : _data(data), _buffer_ref(queue_ref), _read_size(read_size)
     {
     }
 
@@ -150,7 +144,7 @@ public:
 
   private:
     value_type* _data{nullptr}; /**< The data */
-    StagingBuffer* _queue_ref{nullptr};
+    BoundedSPSCRawQueue<Capacity>* _buffer_ref{nullptr};
     size_t _read_size{0};
   };
 
@@ -161,25 +155,18 @@ public:
    * Circular Buffer class Constructor
    * @throws on system error
    */
-  BoundedSPSCQueue() = default;
+  BoundedSPSCObjectQueue() = default;
 
   /**
    * Destructor
    */
-  ~BoundedSPSCQueue() = default;
+  ~BoundedSPSCObjectQueue() = default;
 
   /**
    * Deleted
    */
-  BoundedSPSCQueue(BoundedSPSCQueue const&) = delete;
-  BoundedSPSCQueue& operator=(BoundedSPSCQueue const&) = delete;
-
-  /**
-   * madvices and prefetches the memory in the allocated queue buffer.
-   * This optimises page size misses which occur every 4K otherwise.
-   * Should only be called once during init
-   */
-  QUILL_ATTRIBUTE_COLD void madvice() const;
+  BoundedSPSCObjectQueue(BoundedSPSCObjectQueue const&) = delete;
+  BoundedSPSCObjectQueue& operator=(BoundedSPSCObjectQueue const&) = delete;
 
   /**
    * Add a new object to the queue
@@ -196,19 +183,11 @@ public:
   QUILL_NODISCARD_ALWAYS_INLINE_HOT Handle try_pop() noexcept;
 
   /**
-   * @return total capacity of the queue in bytes
-   */
-  // QUILL_NODISCARD constexpr size_t capacity() const noexcept { return _immutable_data.capacity; }
-
-  /**
    * @return True when the queue is empty, false if there is still data to read
    */
-  QUILL_NODISCARD bool empty() const noexcept
-  {
-    return _producer_pos.load(std::memory_order_relaxed) == _storage;
-  }
+  QUILL_NODISCARD bool empty() const noexcept { return this->is_empty(); }
 
-  QUILL_NODISCARD size_t capacity() const noexcept { return STAGING_BUFFER_SIZE; }
+  QUILL_NODISCARD size_t capacity() const noexcept { return Capacity; }
 
 private:
   /**
@@ -225,15 +204,8 @@ private:
 
 /***/
 template <typename TBaseObject, size_t Capacity>
-void BoundedSPSCQueue<TBaseObject, Capacity>::madvice() const
-{
-  // detail::madvice(_immutable_data.buffer, 2 * _immutable_data.capacity);
-}
-
-/***/
-template <typename TBaseObject, size_t Capacity>
 template <typename TInsertedObject, typename... Args>
-bool BoundedSPSCQueue<TBaseObject, Capacity>::try_emplace(Args&&... args) noexcept
+bool BoundedSPSCObjectQueue<TBaseObject, Capacity>::try_emplace(Args&&... args) noexcept
 {
   static_assert(sizeof(TInsertedObject) < QUILL_QUEUE_CAPACITY,
                 "The size of the object is greater than the queue capacity. Increase "
@@ -243,10 +215,10 @@ bool BoundedSPSCQueue<TBaseObject, Capacity>::try_emplace(Args&&... args) noexce
   // call the destructor.
   // We calculate the remaining bytes until the end of this cache line and add them to the size
   size_t const obj_size = sizeof(TInsertedObject) +
-    _distance_from_next_cache_line(_producer_pos.load(std::memory_order_relaxed), sizeof(TInsertedObject));
+    _distance_from_next_cache_line(this->_producer_pos.load(std::memory_order_relaxed), sizeof(TInsertedObject));
 
   // We want to know if we have enough space in the buffer to store the object
-  unsigned char* write_buffer = prepare_write(obj_size);
+  unsigned char* write_buffer = this->prepare_write(obj_size);
 
   if (QUILL_UNLIKELY(write_buffer == nullptr))
   {
@@ -258,19 +230,19 @@ bool BoundedSPSCQueue<TBaseObject, Capacity>::try_emplace(Args&&... args) noexce
   new (write_buffer) TInsertedObject{std::forward<Args>(args)...};
 
   // update the buffer with the write
-  commit_write(obj_size);
+  this->commit_write(obj_size);
 
   return true;
 }
 
 /***/
 template <typename TBaseObject, size_t Capacity>
-typename BoundedSPSCQueue<TBaseObject, Capacity>::Handle BoundedSPSCQueue<TBaseObject, Capacity>::try_pop() noexcept
+typename BoundedSPSCObjectQueue<TBaseObject, Capacity>::Handle BoundedSPSCObjectQueue<TBaseObject, Capacity>::try_pop() noexcept
 {
   // we have been asked to consume but we don't know yet how much to consume
   // e.g object T might be a base class
 
-  auto const buffer_span = prepare_read();
+  auto const buffer_span = this->prepare_read();
 
   if (buffer_span.second == 0)
   {
@@ -299,8 +271,8 @@ typename BoundedSPSCQueue<TBaseObject, Capacity>::Handle BoundedSPSCQueue<TBaseO
 
 /***/
 template <typename TBaseObject, size_t Capacity>
-size_t BoundedSPSCQueue<TBaseObject, Capacity>::_distance_from_next_cache_line(unsigned char* start_pos,
-                                                                               size_t obj_size) noexcept
+size_t BoundedSPSCObjectQueue<TBaseObject, Capacity>::_distance_from_next_cache_line(unsigned char* start_pos,
+                                                                                     size_t obj_size) noexcept
 {
   // increment the pointer to obj size
   start_pos += obj_size;

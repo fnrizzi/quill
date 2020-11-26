@@ -71,7 +71,8 @@ TEST_CASE("add_remove_thread_context_multithreaded_wait_for_threads_to_join")
     for (auto& thread_context : backend_thread_contexts_cache_local)
     {
       REQUIRE(thread_context->is_valid());
-      REQUIRE(thread_context->spsc_queue().empty());
+      REQUIRE(thread_context->object_spsc_queue().empty());
+      REQUIRE(thread_context->raw_spsc_queue().empty());
     }
 
     // terminate all threads - This will invalidate all the contracts
@@ -86,7 +87,8 @@ TEST_CASE("add_remove_thread_context_multithreaded_wait_for_threads_to_join")
     for (auto* thread_context : backend_thread_contexts_cache_local)
     {
       REQUIRE_FALSE(thread_context->is_valid());
-      REQUIRE(thread_context->spsc_queue().empty());
+      REQUIRE(thread_context->object_spsc_queue().empty());
+      REQUIRE(thread_context->raw_spsc_queue().empty());
     }
 
     // Check there is no thread context left by getting the updated cache via the call
@@ -153,7 +155,8 @@ TEST_CASE("add_remove_thread_context_multithreaded_dont_wait_for_threads_to_join
     for (auto& thread_context : thread_context_collection.backend_thread_contexts_cache())
     {
       REQUIRE(thread_context->is_valid());
-      REQUIRE(thread_context->spsc_queue().empty());
+      REQUIRE(thread_context->object_spsc_queue().empty());
+      REQUIRE(thread_context->raw_spsc_queue().empty());
       thread_context_collection.clear_invalid_and_empty_thread_contexts();
     }
 

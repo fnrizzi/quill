@@ -1,6 +1,7 @@
 #pragma once
 
 #include "quill/detail/misc/Attributes.h"
+#include "quill/detail/misc/Common.h"
 #include "quill/detail/misc/Macros.h"
 
 #include <atomic>
@@ -9,16 +10,19 @@
 #include <cstring>
 #include <utility>
 
-#define STAGING_BUFFER_SIZE 262'144
-
+namespace quill
+{
+namespace detail
+{
 /**
  * Implements a circular FIFO producer/consumer byte queue
  */
-class StagingBuffer
+template <size_t Capacity>
+class BoundedSPSCRawQueue
 {
 public:
-  StagingBuffer() = default;
-  ~StagingBuffer() = default;
+  BoundedSPSCRawQueue() = default;
+  ~BoundedSPSCRawQueue() = default;
 
   /**
    * Attempt to reserve contiguous space for the producer without
@@ -42,15 +46,15 @@ public:
 
     // Since consumerPos can be updated in a different thread, we
     // save a consistent copy of it here to do calculations on
-    unsigned char* consumer_pos = _consumer_pos.load(std::memory_order_relaxed);
     unsigned char* producer_pos = _producer_pos.load(std::memory_order_relaxed);
+    unsigned char* consumer_pos = _consumer_pos.load(std::memory_order_acquire);
 
     if (producer_pos >= consumer_pos)
     {
       // producer is ahead of the consumer
       // cxxxxxxxxxp0000EOB
 
-      unsigned char* endOfBuffer = _storage + STAGING_BUFFER_SIZE;
+      unsigned char* endOfBuffer = _storage + Capacity;
 
       // remaining space to the end of the buffer
       _min_free_space = static_cast<size_t>(endOfBuffer - producer_pos);
@@ -71,7 +75,7 @@ public:
       {
         // prevents producerPos from updating before endOfRecordedSpace
         // NOTE: we want to release the value of endOfRecordedSpace to the consumer thread
-        // We can do that on finishReservation, here we can do relaxed
+        // but we haven't updated the producer pos yet, so we just release it later on commit
         _producer_pos.store(_storage, std::memory_order_relaxed);
 
         // now we wrapped around here, so the remaining space will be from consumer pos until start of buffer
@@ -113,6 +117,10 @@ public:
     _producer_pos.store(_producer_pos.load(std::memory_order_relaxed) + nbytes, std::memory_order_release);
   }
 
+  /**
+   * Prepare to read from the buffer
+   * @return a pair of the buffer location to read and the number of available bytes
+   */
   QUILL_NODISCARD_ALWAYS_INLINE_HOT std::pair<unsigned char*, size_t> prepare_read()
   {
     // Save a consistent copy of producerPos
@@ -145,33 +153,41 @@ public:
   }
 
   /**
-   * Consumes the next nbytes in the StagingBuffer and frees it back
-   * for the producer to reuse. nbytes must be less than what is
-   * returned by peek().
+   * Consumes the next nbytes in the buffer and frees it back
+   * for the producer to reuse.
+   * nbytes must be less or equal than what is returned by prepare_read().
    */
   QUILL_ALWAYS_INLINE_HOT void finish_read(uint64_t nbytes)
   {
-    _consumer_pos.store(_consumer_pos.load(std::memory_order_relaxed) + nbytes, std::memory_order_relaxed);
+    _consumer_pos.store(_consumer_pos.load(std::memory_order_relaxed) + nbytes, std::memory_order_release);
   }
 
+  QUILL_NODISCARD bool is_empty() const noexcept
+  {
+    return _consumer_pos.load(std::memory_order_relaxed) == _producer_pos.load(std::memory_order_relaxed);
+  }
+
+  QUILL_NODISCARD size_t capacity() const noexcept { return Capacity; }
+
 protected:
-  // Backing store used to implement the circular queue
-  alignas(64) unsigned char _storage[STAGING_BUFFER_SIZE] = {};
+  alignas(CACHELINE_SIZE) unsigned char _storage[Capacity] = {};
 
   /** Position within storage[] where the producer may place new data **/
-  alignas(64) std::atomic<unsigned char*> _producer_pos{_storage};
+  alignas(CACHELINE_SIZE) std::atomic<unsigned char*> _producer_pos{_storage};
 
   /**  Marks the end of valid data for the consumer. Set by the producer on a roll-over **/
-  unsigned char* _end_of_recorded_space{_storage + STAGING_BUFFER_SIZE};
+  unsigned char* _end_of_recorded_space{_storage + Capacity};
 
   /** Lower bound on the number of bytes the producer can allocate w/o rolling over the
    * producerPos or stalling behind the consumer **/
-  size_t _min_free_space{STAGING_BUFFER_SIZE};
+  size_t _min_free_space{Capacity};
 
   /**
    * Position within the storage buffer where the consumer will consume
    * the next bytes from. This value is only updated by the consumer.
    */
-  alignas(64) std::atomic<unsigned char*> _consumer_pos{_storage};
-  char _pad0[64 - sizeof(unsigned char*)] = "\0";
+  alignas(CACHELINE_SIZE) std::atomic<unsigned char*> _consumer_pos{_storage};
+  char _pad0[CACHELINE_SIZE - sizeof(unsigned char*)] = "\0";
 };
+} // namespace detail
+} // namespace quill

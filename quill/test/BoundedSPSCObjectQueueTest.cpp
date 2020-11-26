@@ -1,11 +1,11 @@
 #include "doctest/doctest.h"
 
-#include "quill/detail/BoundedSPSCQueue.h"
+#include "quill/detail/BoundedSPSCObjectQueue.h"
 #include <cstring>
 #include <thread>
 #include <vector>
 
-TEST_SUITE_BEGIN("BoundedSPSCQueue");
+TEST_SUITE_BEGIN("BoundedSPSCObjectQueue");
 
 using namespace quill::detail;
 
@@ -25,7 +25,7 @@ struct test_struct_ints_2
 
 TEST_CASE("produce_consume_many_same_type")
 {
-  BoundedSPSCQueue<test_struct_ints, 2'097'152> buffer;
+  BoundedSPSCObjectQueue<test_struct_ints, 2'097'152> buffer;
 
   REQUIRE_EQ(buffer.capacity(), 2'097'152);
   REQUIRE_EQ(buffer.empty(), true);
@@ -143,7 +143,7 @@ private:
 
 TEST_CASE("produce_consume_many_different_types")
 {
-  BoundedSPSCQueue<TestBase, 2'097'152> buffer;
+  BoundedSPSCObjectQueue<TestBase, 2'097'152> buffer;
   REQUIRE_EQ(buffer.capacity(), 2'097'152);
 
   for (int wrap_cnt = 0; wrap_cnt < 10; ++wrap_cnt)
@@ -216,7 +216,7 @@ TEST_CASE("produce_consume_many_different_types")
 
 TEST_CASE("produce_consume_many_multithreaded")
 {
-  BoundedSPSCQueue<TestBase, 2'097'152> buffer;
+  BoundedSPSCObjectQueue<TestBase, 2'097'152> buffer;
 
   REQUIRE_EQ(buffer.capacity(), 2'097'152);
 
@@ -354,53 +354,53 @@ TEST_CASE("produce_consume_many_multithreaded")
   consumer_thread.join();
 }
 
-TEST_CASE("produce_consume_many_multithreaded_2")
-{
-  BoundedSPSCQueue<TestBase, 32'768> buffer;
-
-  REQUIRE_EQ(buffer.capacity(), 32'768);
-
-  std::thread producer_thread([&buffer]() {
-    for (uint32_t wrap_cnt = 0; wrap_cnt < 10; ++wrap_cnt)
-    {
-      for (uint32_t i = 0; i < 8192; ++i)
-      {
-        auto* write_buffer = buffer.prepare_write(sizeof(uint32_t));
-
-        while (!write_buffer)
-        {
-          std::this_thread::sleep_for(std::chrono::microseconds{2});
-          write_buffer = buffer.prepare_write(sizeof(uint32_t));
-        }
-
-        std::memcpy(write_buffer, &i, sizeof(uint32_t));
-
-        buffer.commit_write(sizeof(uint32_t));
-      }
-    }
-  });
-
-  std::thread consumer_thread([&buffer]() {
-    for (uint32_t wrap_cnt = 0; wrap_cnt < 10; ++wrap_cnt)
-    {
-      for (uint32_t i = 0; i < 8192; ++i)
-      {
-        auto read_buffer = buffer.prepare_read(sizeof(uint32_t));
-        while (!read_buffer)
-        {
-          std::this_thread::sleep_for(std::chrono::microseconds{2});
-          read_buffer = buffer.prepare_read(sizeof(uint32_t));
-        }
-
-        auto value = reinterpret_cast<uint32_t const*>(read_buffer);
-        REQUIRE_EQ(*value, i);
-
-        buffer.finish_read(sizeof(uint32_t));
-      }
-    }
-  });
-
-  producer_thread.join();
-  consumer_thread.join();
-}
+// TEST_CASE("produce_consume_many_multithreaded_2")
+//{
+//  BoundedSPSCQueue<TestBase, 32'768> buffer;
+//
+//  REQUIRE_EQ(buffer.capacity(), 32'768);
+//
+//  std::thread producer_thread([&buffer]() {
+//    for (uint32_t wrap_cnt = 0; wrap_cnt < 10; ++wrap_cnt)
+//    {
+//      for (uint32_t i = 0; i < 8192; ++i)
+//      {
+//        auto* write_buffer = buffer.prepare_write(sizeof(uint32_t));
+//
+//        while (!write_buffer)
+//        {
+//          std::this_thread::sleep_for(std::chrono::microseconds{2});
+//          write_buffer = buffer.prepare_write(sizeof(uint32_t));
+//        }
+//
+//        std::memcpy(write_buffer, &i, sizeof(uint32_t));
+//
+//        buffer.commit_write(sizeof(uint32_t));
+//      }
+//    }
+//  });
+//
+//  std::thread consumer_thread([&buffer]() {
+//    for (uint32_t wrap_cnt = 0; wrap_cnt < 10; ++wrap_cnt)
+//    {
+//      for (uint32_t i = 0; i < 8192; ++i)
+//      {
+//        auto read_buffer = buffer.prepare_read(sizeof(uint32_t));
+//        while (!read_buffer)
+//        {
+//          std::this_thread::sleep_for(std::chrono::microseconds{2});
+//          read_buffer = buffer.prepare_read(sizeof(uint32_t));
+//        }
+//
+//        auto value = reinterpret_cast<uint32_t const*>(read_buffer);
+//        REQUIRE_EQ(*value, i);
+//
+//        buffer.finish_read(sizeof(uint32_t));
+//      }
+//    }
+//  });
+//
+//  producer_thread.join();
+//  consumer_thread.join();
+//}
 TEST_SUITE_END();

@@ -5,8 +5,8 @@
 
 #pragma once
 
-#include "quill/detail/BoundedSPSCQueue2.h"
-#include "quill/detail/UnboundedSPSCQueue.h"
+#include "quill/detail/UnboundedSPSCObjectQueue.h"
+#include "quill/detail/UnboundedSPSCRawQueue.h"
 #include "quill/detail/events/BaseEvent.h"
 #include "quill/detail/misc/Common.h"
 #include "quill/detail/misc/Os.h"
@@ -31,10 +31,11 @@ class ThreadContext
 {
 public:
 #if defined(QUILL_USE_BOUNDED_QUEUE)
-  using SPSCQueueT = BoundedSPSCQueue<BaseEvent, QUILL_QUEUE_CAPACITY>;
-  using FastSPSCQueueT = StagingBuffer;
+  using ObjectSPSCQueueT = BoundedSPSCObjectQueue<BaseEvent, QUILL_QUEUE_CAPACITY>;
+  using RawSPSCQueueT = BoundedSPSCRawQueue<QUILL_QUEUE_CAPACITY>;
 #else
-  using SPSCQueueT = UnboundedSPSCQueue<BaseEvent>;
+  using ObjectSPSCQueueT = UnboundedSPSCObjectQueue<BaseEvent, QUILL_QUEUE_CAPACITY>;
+  using RawSPSCQueueT = UnboundedSPSCRawQueue<QUILL_QUEUE_CAPACITY>;
 #endif
 
   /**
@@ -67,7 +68,7 @@ public:
   /**
    * @return A reference to the generic single-producer-single-consumer queue
    */
-  QUILL_NODISCARD_ALWAYS_INLINE_HOT SPSCQueueT& spsc_queue() noexcept
+  QUILL_NODISCARD_ALWAYS_INLINE_HOT ObjectSPSCQueueT& object_spsc_queue() noexcept
   {
     return _generic_spsc_queue;
   }
@@ -75,7 +76,7 @@ public:
   /**
    * @return A reference to the generic single-producer-single-consumer queue const overload
    */
-  QUILL_NODISCARD_ALWAYS_INLINE_HOT SPSCQueueT const& spsc_queue() const noexcept
+  QUILL_NODISCARD_ALWAYS_INLINE_HOT ObjectSPSCQueueT const& object_spsc_queue() const noexcept
   {
     return _generic_spsc_queue;
   }
@@ -84,7 +85,7 @@ public:
    * In this queue we store only log statements that contain 100% of built-in types
    * @return A reference to the fast single-producer-single-consumer queue
    */
-  QUILL_NODISCARD_ALWAYS_INLINE_HOT FastSPSCQueueT& fast_spsc_queue() noexcept
+  QUILL_NODISCARD_ALWAYS_INLINE_HOT RawSPSCQueueT& raw_spsc_queue() noexcept
   {
     return _fast_spsc_queue;
   }
@@ -93,7 +94,7 @@ public:
    * In this queue we store only log statements that contain 100% of built-in types
    * @return A reference to the fast single-producer-single-consumer queue const overload
    */
-  QUILL_NODISCARD_ALWAYS_INLINE_HOT FastSPSCQueueT const& fast_spsc_queue() const noexcept
+  QUILL_NODISCARD_ALWAYS_INLINE_HOT RawSPSCQueueT const& raw_spsc_queue() const noexcept
   {
     return _fast_spsc_queue;
   }
@@ -139,8 +140,8 @@ public:
 #endif
 
 private:
-  SPSCQueueT _generic_spsc_queue; /** queue for this thread, accepts any argument type */
-  FastSPSCQueueT _fast_spsc_queue; /** queue for this thread, only log statements with POD types are here */
+  ObjectSPSCQueueT _generic_spsc_queue; /** queue for this thread, accepts any argument type */
+  RawSPSCQueueT _fast_spsc_queue; /** queue for this thread, only log statements with POD types are here */
   std::string _thread_id{fmt::format_int(get_thread_id()).str()}; /**< cache this thread pid */
   std::atomic<bool> _valid{true}; /**< is this context valid, set by the caller, read by the backend worker thread */
 

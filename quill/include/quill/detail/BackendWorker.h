@@ -9,7 +9,7 @@
 
 #include "quill/QuillError.h"                       // for QUILL_CATCH, QUILL...
 #include "quill/detail/BacktraceLogRecordStorage.h" // for BacktraceLogRecordStorage
-#include "quill/detail/BoundedSPSCQueue.h"          // for BoundedSPSCQueue<>...
+#include "quill/detail/BoundedSPSCObjectQueue.h"    // for BoundedSPSCQueue<>...
 #include "quill/detail/Config.h"                    // for Config
 #include "quill/detail/HandlerCollection.h"         // for HandlerCollection
 #include "quill/detail/LogDataNode.h"
@@ -316,11 +316,11 @@ void BackendWorker::_populate_priority_queue(ThreadContextCollection::backend_th
   for (ThreadContext* thread_context : cached_thread_contexts)
   {
     // Read the generic queue
-    ThreadContext::SPSCQueueT& generic_spsc_queue = thread_context->spsc_queue();
+    ThreadContext::ObjectSPSCQueueT& object_spsc_queue = thread_context->object_spsc_queue();
 
     while (true)
     {
-      auto handle = generic_spsc_queue.try_pop();
+      auto handle = object_spsc_queue.try_pop();
 
       if (!handle.is_valid())
       {
@@ -330,7 +330,7 @@ void BackendWorker::_populate_priority_queue(ThreadContextCollection::backend_th
     }
 
     // Read the fast queue
-    ThreadContext::FastSPSCQueueT& fast_spsc_queue = thread_context->fast_spsc_queue();
+    ThreadContext::RawSPSCQueueT& raw_spsc_queue = thread_context->raw_spsc_queue();
 
     while (true)
     {
@@ -340,7 +340,7 @@ void BackendWorker::_populate_priority_queue(ThreadContextCollection::backend_th
       // |timestamp|log_data_node*|logger_details*|args...|
 
       // We want to read a minimum size of uint64_t (the size of the timestamp)
-      auto const read_buffer_avail_bytes_pair = fast_spsc_queue.prepare_read();
+      auto const read_buffer_avail_bytes_pair = raw_spsc_queue.prepare_read();
       unsigned char* read_buffer = read_buffer_avail_bytes_pair.first;
       size_t const bytes_available = read_buffer_avail_bytes_pair.second;
 
@@ -483,7 +483,7 @@ void BackendWorker::_populate_priority_queue(ThreadContextCollection::backend_th
       }
 
       // Finish reading
-      fast_spsc_queue.finish_read(sizeof(uint64_t) + sizeof(uintptr_t) + sizeof(uintptr_t) + read_size);
+      raw_spsc_queue.finish_read(sizeof(uint64_t) + sizeof(uintptr_t) + sizeof(uintptr_t) + read_size);
 
       // We have the timestamp and the data node ptr, we can construct a transit event out of them
       _transit_events.emplace(thread_context, timestamp, data_node, logger_details, std::move(fmt_store));

@@ -110,7 +110,7 @@ public:
       emplaced = _thread_context_collection.local_thread_context()->spsc_queue().try_emplace<event_t>(notify_callback);
     } while (!emplaced);
 #else
-    _thread_context_collection.local_thread_context()->spsc_queue().emplace<event_t>(notify_callback);
+    _thread_context_collection.local_thread_context()->object_spsc_queue().emplace<event_t>(notify_callback);
 #endif
 
     // The caller thread keeps checking the flag until the backend thread flushes

@@ -10,7 +10,8 @@ set(SOURCE_FILES
         misc/TestUtilities.cpp
         misc/DocTestExtensions.cpp
         BacktraceLogRecordStorageTest.cpp
-        BoundedSPSCQueueTest.cpp
+        BoundedSPSCObjectQueueTest.cpp
+        BoundedSPSCRawQueueTest.cpp
         ConfigTest.cpp
         FileUtilitiesTest.cpp
         FreeListAllocatorTest.cpp

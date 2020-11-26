@@ -196,4 +196,4 @@
  * @note: You can avoid re-allocations when using the unbounded queue (default mode) by setting the initial_queue_capacity to a higher value.
  * QUILL_USE_BOUNDED_QUEUE mode seems to be faster in `quill_hot_path_rdtsc_clock` benchmark by a few nanoseconds.
  */
-#define QUILL_USE_BOUNDED_QUEUE
+// #define QUILL_USE_BOUNDED_QUEUE

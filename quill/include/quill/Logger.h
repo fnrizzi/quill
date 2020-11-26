@@ -122,7 +122,7 @@ public:
   //    detail::get_size_of(total_size, fmt_args...);
   //
   //    auto write_buffer =
-  //      _thread_context_collection.local_thread_context()->fast_spsc_queue().prepare_write(total_size);
+  //      _thread_context_collection.local_thread_context()->raw_spsc_queue().prepare_write(total_size);
   //
   //    // write the timestamp first
   //#if !defined(QUILL_CHRONO_CLOCK)
@@ -147,7 +147,7 @@ public:
   //    // Write all arguments
   //    detail::store_arguments(write_buffer, fmt_args...);
   //
-  //    _thread_context_collection.local_thread_context()->fast_spsc_queue().commit_write(total_size);
+  //    _thread_context_collection.local_thread_context()->raw_spsc_queue().commit_write(total_size);
   //  }
 
   template <bool IsBackTraceLogRecord, typename TLogRecordMetadata, typename TFormatString, typename... FmtArgs>
@@ -179,7 +179,7 @@ public:
     }
 #else
     // emplace to the spsc queue owned by the ctx
-    _thread_context_collection.local_thread_context()->spsc_queue().emplace<log_record_event_t>(
+    _thread_context_collection.local_thread_context()->object_spsc_queue().emplace<log_record_event_t>(
       std::addressof(_logger_details), std::forward<FmtArgs>(fmt_args)...);
 #endif
   }
@@ -204,7 +204,7 @@ public:
         std::addressof(_logger_details), capacity);
     } while (!emplaced);
 #else
-    _thread_context_collection.local_thread_context()->spsc_queue().emplace<event_t>(
+    _thread_context_collection.local_thread_context()->object_spsc_queue().emplace<event_t>(
       std::addressof(_logger_details), capacity);
 #endif
 
@@ -228,7 +228,8 @@ public:
         std::addressof(_logger_details));
     } while (!emplaced);
 #else
-    _thread_context_collection.local_thread_context()->spsc_queue().emplace<event_t>(std::addressof(_logger_details));
+    _thread_context_collection.local_thread_context()->object_spsc_queue().emplace<event_t>(
+      std::addressof(_logger_details));
 #endif
   }
 

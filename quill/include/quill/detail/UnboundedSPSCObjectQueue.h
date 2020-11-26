@@ -5,7 +5,7 @@
 
 #pragma once
 
-#include "BoundedSPSCQueue.h"
+#include "quill/detail/BoundedSPSCObjectQueue.h"
 #include <atomic>
 #include <cassert>
 #include <cstddef>
@@ -37,12 +37,12 @@ namespace detail
  *       version but it offers extra safety. When performance is important consider using a
  *       large fixed_circular_buffer instead.
  */
-template <typename TBaseObject>
-class UnboundedSPSCQueue
+template <typename TBaseObject, size_t Capacity>
+class UnboundedSPSCObjectQueue
 {
 public:
   using value_type = TBaseObject;
-  using bounded_spsc_queue_t = BoundedSPSCQueue<value_type, QUILL_QUEUE_CAPACITY>;
+  using bounded_spsc_queue_t = BoundedSPSCObjectQueue<value_type, Capacity>;
   using handle_t = typename bounded_spsc_queue_t::Handle;
 
 private:
@@ -78,18 +78,18 @@ public:
    * Constructor
    * @param capacity The starting capacity
    */
-  explicit UnboundedSPSCQueue() : _producer(new node()), _consumer(_producer) {}
+  explicit UnboundedSPSCObjectQueue() : _producer(new node()), _consumer(_producer) {}
 
   /**
    * Deleted
    */
-  UnboundedSPSCQueue(UnboundedSPSCQueue const&) = delete;
-  UnboundedSPSCQueue& operator=(UnboundedSPSCQueue const&) = delete;
+  UnboundedSPSCObjectQueue(UnboundedSPSCObjectQueue const&) = delete;
+  UnboundedSPSCObjectQueue& operator=(UnboundedSPSCObjectQueue const&) = delete;
 
   /**
    * Destructor
    */
-  ~UnboundedSPSCQueue()
+  ~UnboundedSPSCObjectQueue()
   {
     // Get the current consumer node
     node* current_node = _consumer;
